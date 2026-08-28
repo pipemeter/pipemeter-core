@@ -223,9 +223,7 @@ impl Router {
     /// every input. If either end of the route is folded, every output feeds
     /// every input, which is the fold itself.
     fn pairs(&self, source: u32, target: u32, out: &Port, input: &Port) -> bool {
-        self.folded(source, target)
-            || input.channel == out.channel
-            || out.channel == "MONO"
+        self.folded(source, target) || input.channel == out.channel || out.channel == "MONO"
     }
 
     fn folded(&self, source: u32, target: u32) -> bool {
@@ -386,13 +384,7 @@ mod tests {
         at(id, node_id, direction, channel, 0)
     }
 
-    fn at(
-        id: u32,
-        node_id: u32,
-        direction: PortDirection,
-        channel: &str,
-        slot: u32,
-    ) -> Port {
+    fn at(id: u32, node_id: u32, direction: PortDirection, channel: &str, slot: u32) -> Port {
         Port {
             id,
             node_id,

@@ -296,7 +296,10 @@ mod tests {
         let before = populated();
         let after = parse(&render(&before));
         assert_eq!(after.len(), before.len());
-        assert_eq!(after.description_of("alsa_input.mic"), Some("Headset Microphone"));
+        assert_eq!(
+            after.description_of("alsa_input.mic"),
+            Some("Headset Microphone")
+        );
         assert_eq!(after.of(Direction::Source).len(), 1);
         // Nothing read from a file is present until the graph says so.
         assert!(!after.is_present("alsa_input.mic"));

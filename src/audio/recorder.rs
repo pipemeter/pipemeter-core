@@ -221,5 +221,5 @@ fn connect(stream: &StreamRc, rate: u32, channels: u16) -> Option<()> {
             &mut params,
         )
         .ok()?;
-        Some(())
-    }
+    Some(())
+}

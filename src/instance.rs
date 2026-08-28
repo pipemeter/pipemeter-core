@@ -50,8 +50,7 @@ pub fn claim() -> io::Result<Option<Guard>> {
 /// The runtime directory when there is one, falling back to the temporary
 /// directory. Either way it is per-user, which is the scope that matters.
 fn lock_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
     dir.join("pipemeeter").join("instance.lock")
 }
 

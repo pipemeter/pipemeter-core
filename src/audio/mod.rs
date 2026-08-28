@@ -9,10 +9,10 @@ pub mod eq;
 pub mod fx;
 mod links;
 mod meters;
-mod recorder;
-pub mod wav;
 mod nodes;
+mod recorder;
 pub mod sinks;
+pub mod wav;
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -327,7 +327,11 @@ impl Backend {
                     .find(|d| d.id == id)
                     .map_or_else(|| id.to_string(), |d| d.name.clone())
             };
-            log::info!("  link  {} -> {}", name(link.output_node), name(link.input_node));
+            log::info!(
+                "  link  {} -> {}",
+                name(link.output_node),
+                name(link.input_node)
+            );
         }
     }
 

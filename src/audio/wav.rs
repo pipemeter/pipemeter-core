@@ -76,7 +76,8 @@ impl Writer {
         let end = SeekFrom::Start(u64::from(HEADER_LEN) + u64::from(data));
         self.file.seek(SeekFrom::Start(RIFF_SIZE_AT))?;
         // The RIFF length counts everything after this field itself.
-        self.file.write_all(&(data + HEADER_LEN - 8).to_le_bytes())?;
+        self.file
+            .write_all(&(data + HEADER_LEN - 8).to_le_bytes())?;
         self.file.seek(SeekFrom::Start(DATA_SIZE_AT))?;
         self.file.write_all(&data.to_le_bytes())?;
         // Back to where the samples go, or the next write lands in the header.
@@ -167,7 +168,9 @@ mod tests {
         let path = std::env::temp_dir().join("pipemeeter-wav-test.wav");
         let mut writer = Writer::create(&path, 48_000, 2).expect("creates");
         // Four stereo frames.
-        writer.write(&[0.0, 0.0, 1.0, -1.0, 0.5, 0.5, 0.0, 0.0]).expect("writes");
+        writer
+            .write(&[0.0, 0.0, 1.0, -1.0, 0.5, 0.5, 0.0, 0.0])
+            .expect("writes");
         assert_eq!(writer.duration().as_secs(), 0);
         writer.finish().expect("finishes");
 

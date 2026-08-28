@@ -237,13 +237,17 @@ fn run(
                 );
                 let _ = added.send(Event::Added(device));
             } else if let Some(stream) = describe_stream(global) {
-                adopt_stream(global, &stream, &Adopt {
-                    registry: &registry_bind,
-                    controls: &controls_add,
-                    core: &core_meter,
-                    meters: &attached_add,
-                    levels: &levels_reg,
-                });
+                adopt_stream(
+                    global,
+                    &stream,
+                    &Adopt {
+                        registry: &registry_bind,
+                        controls: &controls_add,
+                        core: &core_meter,
+                        meters: &attached_add,
+                        levels: &levels_reg,
+                    },
+                );
                 let _ = added_stream.send(Event::StreamAdded(stream));
             } else if let Some(link) = describe_link(global) {
                 let _ = added_stream.send(Event::LinkAdded(link));
@@ -450,9 +454,7 @@ fn handle(context: &CommandContext, command: Command) {
             context.recorder.borrow_mut().clear();
             let started: Vec<_> = takes
                 .iter()
-                .filter_map(|(node, path)| {
-                    super::recorder::start(&context.core, *node, path, rate)
-                })
+                .filter_map(|(node, path)| super::recorder::start(&context.core, *node, path, rate))
                 .collect();
             *context.recorder.borrow_mut() = started;
         }
@@ -465,24 +467,20 @@ fn handle(context: &CommandContext, command: Command) {
             node,
             amplitude,
             balance,
-        } => {
-            match context.controls.borrow().get(&node) {
-                Some(proxy) => {
-                    log::debug!("set volume {amplitude} balance {balance:?} on node {node}");
-                    set_volume(proxy, amplitude, balance);
-                }
-                None => log::debug!("no proxy bound for node {node}"),
+        } => match context.controls.borrow().get(&node) {
+            Some(proxy) => {
+                log::debug!("set volume {amplitude} balance {balance:?} on node {node}");
+                set_volume(proxy, amplitude, balance);
             }
-        }
-        Command::SetMute { node, muted } => {
-            match context.controls.borrow().get(&node) {
-                Some(proxy) => {
-                    log::debug!("set mute {muted} on node {node}");
-                    set_mute(proxy, muted);
-                }
-                None => log::debug!("no proxy bound for node {node}"),
+            None => log::debug!("no proxy bound for node {node}"),
+        },
+        Command::SetMute { node, muted } => match context.controls.borrow().get(&node) {
+            Some(proxy) => {
+                log::debug!("set mute {muted} on node {node}");
+                set_mute(proxy, muted);
             }
-        }
+            None => log::debug!("no proxy bound for node {node}"),
+        },
     }
 }
 
@@ -682,9 +680,7 @@ fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Devic
     let class = props.get("media.class")?;
     // A chain's input is a stream that consumes, so it is a sink as far as
     // routing is concerned, and its output is a source.
-    let ours = props
-        .get("node.name")
-        .is_some_and(super::eq::is_chain_node);
+    let ours = props.get("node.name").is_some_and(super::eq::is_chain_node);
     let direction = match class {
         "Audio/Sink" => Direction::Sink,
         "Audio/Source" => Direction::Source,
@@ -769,7 +765,10 @@ fn describe_port(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<
         node_id,
         // port.id numbers the ports of one direction on one node, which is
         // exactly the ordering a send needs to pick a pair out of.
-        slot: props.get("port.id").and_then(|i| i.parse().ok()).unwrap_or(0),
+        slot: props
+            .get("port.id")
+            .and_then(|i| i.parse().ok())
+            .unwrap_or(0),
         // Ports with no channel (MIDI, control) are filtered out when
         // routing rather than here, so the map stays a faithful mirror.
         channel: props.get("audio.channel").unwrap_or_default().to_owned(),

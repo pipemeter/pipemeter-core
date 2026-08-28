@@ -220,8 +220,7 @@ pub fn spawn_config(name: &str, config: &str) -> io::Result<Chain> {
 /// Where a chain's generated config lives. The runtime directory, since it
 /// is regenerated every launch and means nothing between them.
 fn config_dir() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
     dir.join("pipemeeter")
 }
 
@@ -255,7 +254,6 @@ fn config(name: &str, kind: Kind) -> String {
     // this. See the FX section of TODO.md.
     wrap(name, &nodes, &links, input, &format!("\"{output}\""))
 }
-
 
 /// Three biquads in series, low shelf to high shelf.
 fn equaliser_graph() -> (String, String, &'static str, &'static str) {
@@ -430,7 +428,6 @@ mod tests {
         assert!(text.contains("audio.channels = 2"), "{text}");
         assert!(text.contains("audio.position = [ FL FR ]"), "{text}");
     }
-
 
     #[test]
     fn a_gate_knob_at_rest_sits_below_anything_audible() {
