@@ -507,6 +507,18 @@ impl Backend {
             .is_ok()
     }
 
+    /// Remove our virtual devices and make them again.
+    ///
+    /// Use this rather than [`Backend::remove_devices`] followed by
+    /// [`Backend::create_devices`]. Both of those are requests to the
+    /// `PipeWire` thread rather than things that have happened when the
+    /// call returns, so sending them in sequence is a race, and it is lost
+    /// the obvious way: the devices go and do not come back. This does the
+    /// pair on the thread that owns them, where the order holds.
+    pub fn recreate_devices(&self) {
+        let _ = self.commands.send(Command::RecreateDevices);
+    }
+
     /// Ask the backend to create the virtual strips and buses.
     pub fn create_devices(&self) {
         let _ = self.commands.send(Command::CreateDevices);

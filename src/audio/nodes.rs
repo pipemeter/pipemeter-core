@@ -88,6 +88,9 @@ pub enum Command {
     /// Tear them down. Because they linger, dropping our proxies is not
     /// enough — each global has to be destroyed explicitly.
     RemoveDevices,
+    /// Remove ours and make them again, without the caller being able to
+    /// get the order wrong.
+    RecreateDevices,
     /// Set a node's output level, as a linear amplitude. Mute is amplitude
     /// zero rather than a separate flag, so one path covers both.
     SetVolume {
@@ -414,6 +417,23 @@ fn handle(context: &CommandContext, command: Command) {
             // The registry's global_remove clears the map; dropping our
             // proxies here just releases them.
             context.sinks.borrow_mut().clear();
+        }
+        Command::RecreateDevices => {
+            // Both halves on the thread that owns them, which is what makes
+            // this safe where sending the two commands in sequence is not:
+            // neither has happened by the time its call returns.
+            for owned in context.owned.borrow().values() {
+                let _ = context.registry.destroy_global(owned.id).into_result();
+            }
+            context.sinks.borrow_mut().clear();
+            // Cleared here rather than waiting for `global_remove`, which
+            // arrives later. `create_missing` skips any name it finds in
+            // this map, so leaving the old ones in would create nothing at
+            // all and the devices would simply disappear.
+            context.owned.borrow_mut().clear();
+            let mut made =
+                super::sinks::create_missing(&context.core, &std::collections::HashSet::new());
+            context.sinks.borrow_mut().append(&mut made);
         }
         Command::SetMono { node, end, mono } => {
             context
