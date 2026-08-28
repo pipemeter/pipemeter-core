@@ -1,0 +1,26 @@
+[package]
+name = "pipemeeter-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["PipeMeeter Team <dev@pipemeeter.org>"]
+description = "Core PipeWire audio routing, node and port management, and meter processing for PipeMeeter"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pipemeeter/pipemeeter-core"
+
+[lib]
+name = "pipemeeter_core"
+path = "src/lib.rs"
+
+[dependencies]
+log = "0.4"
+pipewire = { version = "0.10", features = ["v0_3_44"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+similar_names = "allow"
