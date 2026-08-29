@@ -112,7 +112,10 @@ pub enum Command {
     Record {
         /// One entry per take, each its own node and its own file. Empty
         /// stops whatever is running, which is how the deck's Stop is sent.
-        takes: Vec<(u32, std::path::PathBuf)>,
+        /// Each take's node, by name rather than by id. `TARGET_OBJECT`
+        /// resolves a name; handed a registry id it matches nothing and the
+        /// stream records a header and no audio at all.
+        takes: Vec<(String, std::path::PathBuf)>,
         rate: u32,
     },
     /// Set named controls on a filter-chain node.
@@ -467,7 +470,7 @@ fn handle(context: &CommandContext, command: Command) {
             context.recorder.borrow_mut().clear();
             let started: Vec<_> = takes
                 .iter()
-                .filter_map(|(node, path)| super::recorder::start(&context.core, *node, path, rate))
+                .filter_map(|(node, path)| super::recorder::start(&context.core, node, path, rate))
                 .collect();
             *context.recorder.borrow_mut() = started;
         }

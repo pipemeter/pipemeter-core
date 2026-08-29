@@ -78,7 +78,7 @@ impl Drop for Recorder {
 ///
 /// Returns `None` if the stream or the file could not be opened, which is
 /// not fatal: the deck reports that nothing is recording.
-pub fn start(core: &CoreRc, node_id: u32, path: &Path, rate: u32) -> Option<Recorder> {
+pub fn start(core: &CoreRc, node: &str, path: &Path, rate: u32) -> Option<Recorder> {
     const CHANNELS: u16 = 2;
 
     let mut writer = wav::Writer::create(path, rate, CHANNELS)
@@ -91,7 +91,7 @@ pub fn start(core: &CoreRc, node_id: u32, path: &Path, rate: u32) -> Option<Reco
         *pipewire::keys::MEDIA_CATEGORY => "Capture",
         *pipewire::keys::MEDIA_ROLE => "Production",
         *pipewire::keys::STREAM_CAPTURE_SINK => "true",
-        *pipewire::keys::TARGET_OBJECT => node_id.to_string(),
+        *pipewire::keys::TARGET_OBJECT => node,
         *pipewire::keys::NODE_NAME => "pipemeter_recorder",
     };
 
