@@ -168,7 +168,7 @@ pub fn start(core: &CoreRc, node: &str, path: &Path, rate: u32) -> Option<Record
         })
         .ok()?;
 
-    connect(&stream, rate, CHANNELS)?;
+    connect(&stream)?;
 
     log::info!("recording to {}", path.display());
     Some(Recorder {
@@ -180,12 +180,16 @@ pub fn start(core: &CoreRc, node: &str, path: &Path, rate: u32) -> Option<Record
     })
 }
 
-/// Ask for the format we write and join the stream to the graph.
-fn connect(stream: &StreamRc, rate: u32, channels: u16) -> Option<()> {
+/// Join the stream to the graph.
+///
+/// Only the sample format is asked for. Pinning the rate and the channel
+/// count as well produced a stream that connected to the right node,
+/// negotiated, ran, and delivered nothing but zeros - which is what the
+/// meters avoid by asking for the format alone and letting the graph say
+/// the rest.
+fn connect(stream: &StreamRc) -> Option<()> {
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
-    audio_info.set_rate(rate);
-    audio_info.set_channels(u32::from(channels));
     let obj = spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
         id: spa::param::ParamType::EnumFormat.as_raw(),
