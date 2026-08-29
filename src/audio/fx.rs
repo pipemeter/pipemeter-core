@@ -224,7 +224,7 @@ pub fn config(kind: Kind) -> String {
             let _ = writeln!(
                 nodes,
                 "          {{ type = builtin name = s{strip}{side} label = linear \
-control = {{ \"Mult\" = {mult} \"Add\" = 0.0 }} }}"
+control = {{ \"Mult\" = {mult:.1} \"Add\" = 0.0 }} }}"
             );
         }
     }
@@ -263,7 +263,7 @@ control = {{ {gains} }} }}"
                 let _ = writeln!(
                     nodes,
                     "          {{ type = builtin name = r{bus}{side} label = linear \
-control = {{ \"Mult\" = {mult} \"Add\" = 0.0 }} }}"
+control = {{ \"Mult\" = {mult:.1} \"Add\" = 0.0 }} }}"
                 );
                 let _ = writeln!(
                     links,
@@ -418,13 +418,21 @@ mod tests {
         }
     }
 
+    /// Every gain starts silent except the first send and return pair,
+    /// which is the only pair `filter-chain` processes and so the one
+    /// every send chain meets on. Its level lives in those chains.
     #[test]
-    fn everything_starts_silent() {
+    fn only_the_carrying_pair_starts_open() {
         let text = config(Kind::Reverb);
         assert_eq!(
             text.matches("\"Mult\" = 0.0").count(),
-            (STRIPS + BUSES) * 2,
-            "some gain does not start at zero",
+            (STRIPS + BUSES - 2) * 2,
+            "the wrong number of gains start at zero",
+        );
+        assert_eq!(
+            text.matches("\"Mult\" = 1.0").count(),
+            4,
+            "s0 and r0, both sides, should start at unity",
         );
     }
 
