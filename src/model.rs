@@ -213,6 +213,63 @@ impl Bus {
     }
 }
 
+/// A strip compressor's detailed parameters.
+///
+/// The same fields the settings file carries, so loading and saving are a
+/// copy rather than a translation. Units are as the file writes them:
+/// decibels for the thresholds and gains, milliseconds for the times.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Compressor {
+    pub gain_in: f32,
+    pub attack: f32,
+    pub release: f32,
+    pub knee: f32,
+    pub ratio: f32,
+    pub threshold: f32,
+    pub auto_makeup: bool,
+    pub gain_out: f32,
+}
+
+impl Default for Compressor {
+    fn default() -> Self {
+        Self {
+            gain_in: 0.0,
+            attack: 10.0,
+            release: 50.0,
+            knee: 0.5,
+            ratio: 1.0,
+            threshold: 0.0,
+            auto_makeup: true,
+            gain_out: 0.0,
+        }
+    }
+}
+
+/// A strip gate's detailed parameters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gate {
+    pub threshold: f32,
+    pub damping: f32,
+    /// Sidechain bandpass centre, in Hz.
+    pub sidechain: f32,
+    pub attack: f32,
+    pub hold: f32,
+    pub release: f32,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            threshold: -60.0,
+            damping: 0.0,
+            sidechain: 1000.0,
+            attack: 1.0,
+            hold: 500.0,
+            release: 1000.0,
+        }
+    }
+}
+
 /// Where the limiter rests: the top of the fader range, which is where
 /// the original leaves it and means no limiting at all.
 pub const LIMIT_OFF: f32 = 12.0;
@@ -317,6 +374,14 @@ pub struct Strip {
     pub buses: [bool; 8],
     /// Fader position in dB.
     pub gain_db: f32,
+    /// The compressor's detailed parameters, behind the Comp knob.
+    ///
+    /// Separate from `comp`, which is the knob itself: the knob is the
+    /// one-control version the strip shows, and these are what its dialog
+    /// edits. Both are in the settings file and both are kept.
+    pub compressor: Compressor,
+    /// The gate's detailed parameters, behind the Gate knob.
+    pub gate_params: Gate,
     /// Where the brickwall limiter holds the signal, in dB.
     ///
     /// The reference sets this by dragging on the strip's own VU meter and
@@ -447,6 +512,8 @@ impl Strip {
             device_missing: false,
             buses: [false; 8],
             gain_db: 0.0,
+            compressor: Compressor::default(),
+            gate_params: Gate::default(),
             limit_db: LIMIT_OFF,
             flags: [false; 4],
             levels: (0.0, 0.0),
