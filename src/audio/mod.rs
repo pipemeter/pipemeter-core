@@ -9,6 +9,7 @@ pub mod eq;
 pub mod fx;
 mod links;
 mod meters;
+pub mod monitors;
 mod nodes;
 mod recorder;
 pub mod sinks;

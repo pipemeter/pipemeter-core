@@ -896,4 +896,19 @@ mod tests {
         let text = config("x", Kind::Dynamics);
         assert!(text.contains("\"mode\" = 0"), "{text}");
     }
+
+    #[test]
+    #[ignore = "writes a config for the probe script rather than asserting"]
+    fn dump_eq_for_probe() {
+        std::fs::write(
+            "/tmp/probe_eq.conf",
+            config("probe_eqchain", Kind::Equaliser),
+        )
+        .expect("writes");
+        std::fs::write(
+            "/tmp/probe_dyn.conf",
+            config("probe_dynchain", Kind::Dynamics),
+        )
+        .expect("writes");
+    }
 }
