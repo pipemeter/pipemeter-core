@@ -215,12 +215,16 @@ pub fn config(kind: Kind) -> String {
     let mut nodes = String::new();
     let mut links = String::new();
 
+    // The first pair is the one that carries: every send chain meets on
+    // it, so it starts at unity and the levels live in those chains. The
+    // rest start silent and stay so - filter-chain never processes them.
     for strip in 0..STRIPS {
         for side in ["L", "R"] {
+            let mult = f32::from(u8::from(strip == 0));
             let _ = writeln!(
                 nodes,
                 "          {{ type = builtin name = s{strip}{side} label = linear \
-control = {{ \"Mult\" = 0.0 \"Add\" = 0.0 }} }}"
+control = {{ \"Mult\" = {mult} \"Add\" = 0.0 }} }}"
             );
         }
     }
@@ -255,10 +259,11 @@ control = {{ {gains} }} }}"
         );
         if kind.returns_to_buses() {
             for bus in 0..BUSES {
+                let mult = f32::from(u8::from(bus == 0));
                 let _ = writeln!(
                     nodes,
                     "          {{ type = builtin name = r{bus}{side} label = linear \
-control = {{ \"Mult\" = 0.0 \"Add\" = 0.0 }} }}"
+control = {{ \"Mult\" = {mult} \"Add\" = 0.0 }} }}"
                 );
                 let _ = writeln!(
                     links,
