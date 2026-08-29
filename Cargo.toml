@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["PipeMeeter Team <dev@pipemeeter.org>"]
 description = "Core PipeWire audio routing, node and port management, and meter processing for PipeMeeter"
 license = "Unlicense"
-repository = "https://github.com/pipemeeter/pipemeter-core"
+repository = "https://github.com/pipemeter/pipemeter-core"
 
 [lib]
 name = "pipemeter_core"
