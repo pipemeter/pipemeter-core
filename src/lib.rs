@@ -20,4 +20,5 @@
 pub mod audio;
 pub mod devices;
 pub mod instance;
+pub mod model;
 pub mod paths;
