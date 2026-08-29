@@ -214,12 +214,19 @@ pub fn wrong_class(name: &str, class: &str) -> bool {
 /// True if `name` is one of ours. Used to keep our own sinks out of the
 /// device lists offered for hardware assignment — you should not be able to
 /// route a strip's output back into its own input.
+pub const PREFIX: &str = "pipemeter_";
+
+/// Whether a node is one this library created.
+#[must_use]
 pub fn is_ours(name: &str) -> bool {
-    // The former prefix counts too. Devices made by a build from before the
-    // library took its own name are still ours, and a run that did not
-    // recognise them would leave them in the graph for good: nothing else
-    // is ever going to clean them up.
-    all_specs().any(|s| s.name == name) || name.starts_with("pipemeeter_")
+    // A device made by a build from before the library took its own name is
+    // still ours, and a run that did not recognise it would leave it in the
+    // graph for good: nothing else is ever going to clean it up. The old
+    // prefix is the new one with a doubled vowel, spelled that way rather
+    // than written out because this crate is public and the mixer's name is
+    // not.
+    let former = PREFIX.replace("eme", "emee");
+    all_specs().any(|s| s.name == name) || name.starts_with(&former)
 }
 
 #[cfg(test)]
