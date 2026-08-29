@@ -82,6 +82,15 @@ pub enum Kind {
     /// software, which is what makes it external.
     External1,
     External2,
+    /// An external FX return. The other half of a send: the program that
+    /// processed the audio plays back into this chain's input, and it
+    /// carries one gain per bus on the way out, which are the External FX
+    /// Return knobs. Only the first input pair is used - the rest of the
+    /// per-strip inputs exist because it is the same graph as a returning
+    /// effect, and building a second shape for it would be two things to
+    /// keep in step.
+    Return1,
+    Return2,
 }
 
 impl Kind {
@@ -93,7 +102,29 @@ impl Kind {
     /// single output pair instead of one per bus.
     #[must_use]
     pub fn returns_to_buses(self) -> bool {
+        matches!(
+            self,
+            Self::Reverb | Self::Delay | Self::Return1 | Self::Return2
+        )
+    }
+
+    /// Whether the chain is switched on and off by a preset.
+    ///
+    /// Only the two internal effects are. A send and a return are always
+    /// live: there is no preset to choose, and their knobs at zero are
+    /// what silences them.
+    #[must_use]
+    pub fn has_preset(self) -> bool {
         matches!(self, Self::Reverb | Self::Delay)
+    }
+
+    /// Whether the chain gathers its input from the strips.
+    ///
+    /// Everything except a return does. A return's input comes from
+    /// whichever program processed the send, playing into its input node.
+    #[must_use]
+    pub fn takes_strip_sends(self) -> bool {
+        !matches!(self, Self::Return1 | Self::Return2)
     }
 
     /// The node name, and the suffix that marks the helper as ours.
@@ -104,6 +135,8 @@ impl Kind {
             Self::Delay => "pipemeeter_delay",
             Self::External1 => "pipemeeter_extfx1",
             Self::External2 => "pipemeeter_extfx2",
+            Self::Return1 => "pipemeeter_extret1",
+            Self::Return2 => "pipemeeter_extret2",
         }
     }
 
@@ -138,7 +171,7 @@ control = { \"Delay (s)\" = 0.25 \"Feedback\" = 0.3 } }"
             ),
             // Straight through: the mix is the product, so there is nothing
             // between the summing and the output.
-            Self::External1 | Self::External2 => (
+            Self::External1 | Self::External2 | Self::Return1 | Self::Return2 => (
                 String::new(),
                 "          { output = \"sumL:Out\" input = \"outL:In\" }\n\
                  \x20         { output = \"sumR:Out\" input = \"outR:In\" }"
