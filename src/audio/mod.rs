@@ -5,6 +5,7 @@
 //! The UI never touches a `PipeWire` object directly — it drains [`Event`]s
 //! once per frame and reads the resulting snapshot.
 
+pub mod dynamics;
 pub mod eq;
 pub mod fx;
 mod links;
