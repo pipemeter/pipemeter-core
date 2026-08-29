@@ -150,6 +150,16 @@ pub fn comp_threshold(db: f32) -> f32 {
     raw.clamp(0.35, 1.0)
 }
 
+/// `caps` Compress runs in mode 0, and the mode is not optional.
+///
+/// Its default is mode 1, which is not transparent: measured with the
+/// strength at zero - no compression asked for at all - it still took a
+/// -8.73 dBFS tone to -11.60. Every hardware strip was quietly losing
+/// 2.87 dB for as long as the mode went unset. In mode 0 the same
+/// configuration returns -8.73 exactly.
+///
+/// The limiter learned this first and the compressor did not, which is
+/// the whole reason it went unnoticed.
 /// The controls the AUDIBILITY knobs drive, as filter-chain addresses them.
 pub const GATE_CONTROL: &str = "gate:open (dB)";
 pub const COMP_CONTROL: &str = "comp:strength";
@@ -517,7 +527,7 @@ control = {{ \"open (dB)\" = {GATE_OPEN_MIN} \"attack (ms)\" = 0.0 \"close (dB)\
          \x20         {{ type = builtin name = gmix label = mixer \
 control = {{ \"Gain 1\" = {dry} \"Gain 2\" = {wet} }} }}\n\
          \x20         {{ type = ladspa name = comp plugin = caps label = Compress \
-control = {{ \"strength\" = 0.0 \"threshold\" = 0.5 \"attack\" = 0.75 \"release\" = 0.5 \"gain (dB)\" = 0.0 }} }}"
+control = {{ \"mode\" = 0 \"strength\" = 0.0 \"threshold\" = 0.5 \"attack\" = 0.75 \"release\" = 0.5 \"gain (dB)\" = 0.0 }} }}"
     );
     let mut links = "          { output = \"gcopy:Out\" input = \"gate:in\" }\n\
          \x20         { output = \"gcopy:Out\" input = \"gmix:In 1\" }\n\
@@ -876,5 +886,14 @@ mod tests {
             text.contains(super::DENOISER_LABEL),
             super::denoiser_available()
         );
+    }
+
+    /// caps Compress defaults to a mode that attenuates even when it is
+    /// asked to do nothing. Leaving the mode unset cost 2.87 dB on every
+    /// hardware strip.
+    #[test]
+    fn the_compressor_runs_in_the_transparent_mode() {
+        let text = config("x", Kind::Dynamics);
+        assert!(text.contains("\"mode\" = 0"), "{text}");
     }
 }
