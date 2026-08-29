@@ -142,11 +142,7 @@ impl Registry {
 /// Where the list lives.
 #[must_use]
 pub fn path() -> Option<PathBuf> {
-    Some(
-        crate::paths::documents_dir()?
-            .join("Pipemeter")
-            .join("Devices.tsv"),
-    )
+    Some(crate::paths::config_dir()?.join("Devices.tsv"))
 }
 
 /// Read the remembered list. Everything read starts out absent: only the
