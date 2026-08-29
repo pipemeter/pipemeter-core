@@ -104,6 +104,16 @@ impl Registry {
         self.seen.remove(name);
     }
 
+    /// Everything not plugged in right now, in the order it is stored.
+    ///
+    /// What the Forget Old Devices window offers: a person cannot decide
+    /// what to drop without seeing it, and the count alone never said
+    /// which ones were about to go.
+    #[must_use]
+    pub fn absent(&self) -> Vec<&Known> {
+        self.seen.values().filter(|known| !known.present).collect()
+    }
+
     /// Drop everything that is not plugged in right now.
     ///
     /// Returns how many went. Assignments to them are left alone: a strip
