@@ -88,6 +88,46 @@ pub enum Kind {
     BusEqualiser,
 }
 
+/// The brickwall limiter at the end of every strip graph.
+///
+/// `caps` "Compress" in **mode 0**, which is the only one of its three
+/// that is transparent when it is not acting: measured against a
+/// reference capture, mode 0 returned it to the hundredth of a decibel
+/// while modes 1 and 2 quietly lost 2.9 and 4.4 dB. That matters more
+/// than anything else here, because this stage sits in every strip
+/// including the one carrying a live microphone.
+pub const LIMIT_NODE: &str = "lim";
+
+/// Its threshold, as filter-chain addresses it.
+pub const LIMIT_CONTROL: &str = "lim:threshold";
+
+/// The lowest threshold worth sending. Below about 0.6 the plugin stops
+/// responding - measured output flattens out around -24.7 dBFS however
+/// much further it is pushed - so the range is bounded rather than
+/// pretending the bottom half does something.
+const LIMIT_THRESHOLD_MIN: f32 = 0.7;
+
+/// Decibels per unit of threshold, and the point the line is fixed at.
+///
+/// Fitted to a calibration sweep against a -0.92 dBFS tone: threshold 0.8
+/// held it at -10.77 dBFS and 0.7 at -20.29. The fit puts 0 dB at 0.913,
+/// which agrees with 0.9 having measured transparent - two ways of
+/// arriving at the same number, which is why it is trusted.
+const LIMIT_DB_PER_UNIT: f32 = 95.2;
+const LIMIT_ANCHOR_T: f32 = 0.8;
+const LIMIT_ANCHOR_DB: f32 = -10.77;
+
+/// The lowest threshold the mixer offers, in dB. The plugin cannot
+/// usefully hold a signal below this.
+pub const LIMIT_MIN_DB: f32 = -20.0;
+
+/// Turn a threshold in dB into the plugin's 0..1 control.
+#[must_use]
+pub fn limit_threshold(db: f32) -> f32 {
+    let raw = LIMIT_ANCHOR_T + (db - LIMIT_ANCHOR_DB) / LIMIT_DB_PER_UNIT;
+    raw.clamp(LIMIT_THRESHOLD_MIN, 1.0)
+}
+
 /// The controls the AUDIBILITY knobs drive, as filter-chain addresses them.
 pub const GATE_CONTROL: &str = "gate:open (dB)";
 pub const COMP_CONTROL: &str = "comp:strength";
@@ -543,5 +583,26 @@ mod tests {
             config("probe_buseq", Kind::BusEqualiser),
         )
         .expect("writes");
+    }
+
+    /// At rest it has to be the measured no-op, not merely close to one.
+    #[test]
+    fn the_resting_limiter_is_the_transparent_threshold() {
+        assert!((super::limit_threshold(crate::model::LIMIT_OFF) - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// The two points the calibration sweep actually measured.
+    #[test]
+    fn the_mapping_reproduces_the_sweep() {
+        assert!((super::limit_threshold(-10.77) - 0.8).abs() < 0.005);
+        assert!((super::limit_threshold(-20.29) - 0.7).abs() < 0.005);
+    }
+
+    /// Below the useful range the plugin stops responding, so the control
+    /// stops rather than pretending.
+    #[test]
+    fn the_threshold_is_bounded_at_both_ends() {
+        assert!(super::limit_threshold(-200.0) >= 0.7);
+        assert!(super::limit_threshold(200.0) <= 1.0);
     }
 }
