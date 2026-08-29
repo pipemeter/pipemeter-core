@@ -118,6 +118,38 @@ pub fn limit_amplitude(db: f32) -> f32 {
     10.0f32.powf(db / 20.0)
 }
 
+/// The compressor's threshold and output gain, as filter-chain addresses
+/// them.
+pub const COMP_THRESHOLD: &str = "comp:threshold";
+pub const COMP_GAIN: &str = "comp:gain (dB)";
+
+/// Where the plugin's 0..1 threshold sits in decibels, and how fast it
+/// moves.
+///
+/// Measured, not guessed. A ten-step staircase from -33 to -6 dBFS was
+/// played through the plugin and the onset - the quietest step it still
+/// left alone - was read off at each setting:
+///
+/// | control | 0.80 | 0.75 | 0.70 | 0.60 | 0.50 | 0.45 | 0.40 | 0.35 |
+/// | onset   |  -6  |  -9  | -12  | -16  | -21  | -24  | -27  | -30  |
+///
+/// That is a straight line: fifty decibels per unit, through -6 dB at
+/// 0.80. The last three rows were predictions before they were
+/// measurements, which is why the line is trusted.
+const COMP_DB_PER_UNIT: f32 = 50.0;
+const COMP_ANCHOR_T: f32 = 0.80;
+const COMP_ANCHOR_DB: f32 = -6.0;
+
+/// Turn a compressor threshold in dB into the plugin's control.
+///
+/// Clamped at the bottom to where it was actually measured; below that
+/// the plugin starts acting on everything and the line was never checked.
+#[must_use]
+pub fn comp_threshold(db: f32) -> f32 {
+    let raw = COMP_ANCHOR_T + (db - COMP_ANCHOR_DB) / COMP_DB_PER_UNIT;
+    raw.clamp(0.35, 1.0)
+}
+
 /// The controls the AUDIBILITY knobs drive, as filter-chain addresses them.
 pub const GATE_CONTROL: &str = "gate:open (dB)";
 pub const COMP_CONTROL: &str = "comp:strength";
@@ -600,5 +632,32 @@ mod tests {
         assert!((super::limit_amplitude(0.0) - 1.0).abs() < 1e-5);
         assert!((super::limit_amplitude(-6.02) - 0.5).abs() < 0.001);
         assert!((super::limit_amplitude(-12.04) - 0.25).abs() < 0.001);
+    }
+
+    /// Every point the staircase actually measured, to a tenth of the
+    /// control. If this drifts, the mapping stopped matching the plugin.
+    #[test]
+    fn the_threshold_matches_the_measured_onsets() {
+        for (db, expected) in [
+            (-6.0, 0.80),
+            (-9.0, 0.74),
+            (-12.0, 0.68),
+            (-21.0, 0.50),
+            (-30.0, 0.32_f32.max(0.35)),
+        ] {
+            let got = super::comp_threshold(db);
+            assert!(
+                (got - expected).abs() < 0.03,
+                "{db} dB gave {got}, expected about {expected}"
+            );
+        }
+    }
+
+    /// Wide open has to be genuinely transparent: 0.85 and above left the
+    /// whole staircase untouched.
+    #[test]
+    fn a_high_threshold_never_acts() {
+        assert!(super::comp_threshold(0.0) >= 0.9);
+        assert!(super::comp_threshold(12.0) <= 1.0);
     }
 }
