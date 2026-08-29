@@ -45,6 +45,34 @@ const FREQUENCIES: [f32; 3] = [100.0, 1_000.0, 8_000.0];
 /// also how a band is addressed when setting its gain, as `<name>:Gain`.
 pub const BANDS: [&str; 3] = ["bass", "mid", "treble"];
 
+/// The bus EQ's six cells, as a real settings file writes them: peaking
+/// filters at these centres with a Q of 3 and no gain.
+///
+/// Read off `<VoiceMeeterBUSEQ>` rather than chosen. A parametric EQ's
+/// bands are the user's to move, so any spread would have *worked* - but
+/// a Voicemeeter user opening this dialog should find their own cells
+/// where they left them, which means starting where the original starts.
+pub const BUS_FREQUENCIES: [f32; 6] = [50.0, 200.0, 800.0, 2_000.0, 8_000.0, 12_000.0];
+
+/// The Q every cell starts at.
+pub const BUS_Q: f32 = 3.0;
+
+/// How many cells a bus EQ has.
+pub const BUS_BANDS: usize = BUS_FREQUENCIES.len();
+
+/// What a cell is called inside the graph, and so how its controls are
+/// addressed: `cell1:Freq`, `cell1:Q`, `cell1:Gain`.
+#[must_use]
+pub fn bus_band(cell: usize) -> String {
+    format!("cell{}", cell + 1)
+}
+
+/// The filter-chain address of one of a cell's three controls.
+#[must_use]
+pub fn bus_control(cell: usize, control: &str) -> String {
+    format!("{}:{control}", bus_band(cell))
+}
+
 /// Which graph a chain runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -52,6 +80,8 @@ pub enum Kind {
     Equaliser,
     /// Gate then compressor: the hardware strips' AUDIBILITY pair.
     Dynamics,
+    /// Six parametric cells: a bus's MASTER EQ.
+    BusEqualiser,
 }
 
 /// The controls the AUDIBILITY knobs drive, as filter-chain addresses them.
@@ -172,6 +202,7 @@ pub fn spawn(sink: &str, kind: Kind) -> io::Result<Chain> {
     let suffix = match kind {
         Kind::Equaliser => "eq",
         Kind::Dynamics => "fx",
+        Kind::BusEqualiser => "buseq",
     };
     let name = format!("{sink}_{suffix}");
     spawn_config(&name, &config(&name, kind))
@@ -225,6 +256,7 @@ fn config(name: &str, kind: Kind) -> String {
     let (nodes, links, input, output) = match kind {
         Kind::Equaliser => equaliser_graph(),
         Kind::Dynamics => dynamics_graph(),
+        Kind::BusEqualiser => bus_equaliser_graph(),
     };
     wrap(name, &nodes, &links, input, &format!("\"{output}\""))
 }
@@ -251,6 +283,38 @@ fn equaliser_graph() -> (String, String, &'static str, &'static str) {
                  \x20         { output = \"mid:Out\"  input = \"treble:In\" }"
         .to_owned();
     (nodes, links, "bass:In", "treble:Out")
+}
+
+/// Six peaking biquads in series.
+///
+/// All three controls of every cell are writable at runtime, which is what
+/// makes it parametric rather than six fixed bands: `bq_peaking` takes
+/// Freq, Q and Gain, and filter-chain will accept all of them while the
+/// chain is running.
+fn bus_equaliser_graph() -> (String, String, &'static str, &'static str) {
+    let nodes = BUS_FREQUENCIES
+        .iter()
+        .enumerate()
+        .map(|(cell, freq)| {
+            format!(
+                "          {{ type = builtin name = {} label = bq_peaking \
+                 control = {{ \"Freq\" = {freq} \"Q\" = {BUS_Q} \"Gain\" = 0.0 }} }}",
+                bus_band(cell)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let links = (0..BUS_BANDS - 1)
+        .map(|cell| {
+            format!(
+                "          {{ output = \"{}:Out\" input = \"{}:In\" }}",
+                bus_band(cell),
+                bus_band(cell + 1)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (nodes, links, "cell1:In", "cell6:Out")
 }
 
 /// Gate into compressor. Both are CAPS plugins, which are a standard part of
@@ -330,7 +394,9 @@ pub fn gain_db(knob: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BANDS, Kind, comp_strength, config, gain_db, gate_open_db};
+    use super::{
+        BANDS, BUS_BANDS, BUS_FREQUENCIES, Kind, comp_strength, config, gain_db, gate_open_db,
+    };
 
     #[test]
     fn both_chain_kinds_are_recognised_at_both_ends() {
@@ -424,5 +490,51 @@ mod tests {
         assert!(text.contains("inputs  = [ \"bass:In\" ]"));
         assert!(text.contains("outputs = [ \"treble:Out\" ]"), "{text}");
         assert!(text.contains("output = \"bass:Out\" input = \"mid:In\""));
+    }
+
+    #[test]
+    fn the_bus_eq_carries_every_cell_the_file_does() {
+        let text = config("bus", Kind::BusEqualiser);
+        for (cell, freq) in BUS_FREQUENCIES.iter().enumerate() {
+            let name = super::bus_band(cell);
+            assert!(
+                text.contains(&format!("name = {name} label = bq_peaking")),
+                "cell {name} missing from the graph"
+            );
+            assert!(text.contains(&format!("\"Freq\" = {freq}")));
+        }
+    }
+
+    #[test]
+    fn the_bus_eq_cells_run_in_series() {
+        let text = config("bus", Kind::BusEqualiser);
+        for cell in 0..BUS_BANDS - 1 {
+            assert!(text.contains(&format!(
+                "output = \"{}:Out\" input = \"{}:In\"",
+                super::bus_band(cell),
+                super::bus_band(cell + 1)
+            )));
+        }
+    }
+
+    /// A chain declaring more outputs than its capture channels breaks its
+    /// channel mapping and passes silence, which cost an afternoon once.
+    #[test]
+    fn the_bus_eq_is_stereo_in_and_stereo_out() {
+        let text = config("bus", Kind::BusEqualiser);
+        assert_eq!(text.matches("audio.channels = 2").count(), 2);
+    }
+
+    #[test]
+    fn a_bus_eq_control_is_addressed_by_cell() {
+        assert_eq!(super::bus_control(0, "Gain"), "cell1:Gain");
+        assert_eq!(super::bus_control(5, "Freq"), "cell6:Freq");
+    }
+
+    #[test]
+    #[ignore = "writes a config for the probe script rather than asserting"]
+    fn dump_bus_eq_for_probe() {
+        std::fs::write("/tmp/bus_eq.conf", config("probe_buseq", Kind::BusEqualiser))
+            .expect("writes");
     }
 }
