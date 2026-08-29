@@ -746,6 +746,42 @@ fn send_props(node: &pipewire::node::Node, object: &pipewire::spa::pod::Object) 
 /// Turn a registry global into a [`Device`], or `None` if it is not an audio
 /// node we care about. Everything `PipeWire` exposes comes through here —
 /// devices, ports, links, factories — so the filtering matters.
+/// A node's sample rate.
+///
+/// Most device nodes do not publish `audio.rate`; the rate they are running
+/// at is in `clock.rate`, and ALSA nodes carry it as a fraction in
+/// `node.rate` such as `1/48000`. Reading only the first left every row of
+/// the settings window showing a dash.
+fn node_rate(props: &DictRef) -> Option<u32> {
+    if let Some(rate) = props.get("audio.rate").and_then(|r| r.parse().ok()) {
+        return Some(rate);
+    }
+    if let Some(rate) = props.get("clock.rate").and_then(|r| r.parse().ok()) {
+        return Some(rate);
+    }
+    // `1/48000`, where the denominator is the rate.
+    props
+        .get("node.rate")
+        .and_then(|r| r.split_once('/'))
+        .and_then(|(_, rate)| rate.parse().ok())
+}
+
+/// A node's channel count.
+///
+/// `audio.channels` when it is there, otherwise counted from the channel
+/// map in `audio.position`, which reads like `FL,FR`.
+fn node_channels(props: &DictRef) -> Option<u32> {
+    if let Some(channels) = props.get("audio.channels").and_then(|c| c.parse().ok()) {
+        return Some(channels);
+    }
+    let position = props.get("audio.position")?;
+    let count = position
+        .split(',')
+        .filter(|part| !part.trim().is_empty())
+        .count();
+    u32::try_from(count).ok().filter(|count| *count > 0)
+}
+
 fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Device> {
     let props = global.props?;
     let class = props.get("media.class")?;
@@ -778,8 +814,8 @@ fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Devic
         description,
         direction,
         class: class.to_owned(),
-        rate: props.get("audio.rate").and_then(|r| r.parse().ok()),
-        channels: props.get("audio.channels").and_then(|c| c.parse().ok()),
+        rate: node_rate(props),
+        channels: node_channels(props),
         assignable: !ours,
     })
 }
