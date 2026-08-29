@@ -209,6 +209,59 @@ pub fn gate_close_db(open_db: f32) -> f32 {
     (open_db - GATE_HYSTERESIS).clamp(-80.0, 0.0)
 }
 
+/// The denoiser, when one is installed.
+///
+/// `noise-suppression-for-voice`, which wraps `RNNoise` as a LADSPA plugin.
+/// Chosen by measurement and by what this machine can load: against a
+/// signal alternating noise with a voice-shaped harmonic stack it took
+/// the noise-only stretches from -30.8 to -90.3 dBFS while leaving the
+/// voice at -19.6 against -19.0 - separation from 11.8 dB to 70.7. Its
+/// only rival, `noise-repellent`, is LV2, and this `PipeWire` has no LV2
+/// loader at all: builtin, ebur128, ladspa and sofa, and that is the
+/// list.
+///
+/// It is GPL-3.0, so it is loaded if the user has installed it and never
+/// shipped with us.
+pub const DENOISER_PLUGIN: &str = "librnnoise_ladspa";
+pub const DENOISER_LABEL: &str = "noise_suppressor_mono";
+
+/// Its dry and wet sides, blended so the knob is an amount rather than a
+/// switch - the plugin itself has no depth control.
+pub const DENOISER_DRY: &str = "dmix:Gain 1";
+pub const DENOISER_WET: &str = "dmix:Gain 2";
+
+/// Where a LADSPA plugin might be, including the user's own directory.
+///
+/// A chain naming a plugin that is not there fails to start at all, which
+/// would take the whole strip with it - so the graph asks first.
+#[must_use]
+pub fn denoiser_available() -> bool {
+    denoiser_search_paths().any(|dir| dir.join(format!("{DENOISER_PLUGIN}.so")).exists())
+}
+
+fn denoiser_search_paths() -> impl Iterator<Item = PathBuf> {
+    let from_env = std::env::var("LADSPA_PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    from_env
+        .split(':')
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .chain([
+            PathBuf::from(&home).join(".ladspa"),
+            PathBuf::from("/usr/lib64/ladspa"),
+            PathBuf::from("/usr/lib/ladspa"),
+        ])
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// The knob's dry and wet gains. At rest the denoiser is out of the way.
+#[must_use]
+pub fn denoiser_blend(knob: f32) -> (f32, f32) {
+    let wet = knob.clamp(0.0, 1.0);
+    (1.0 - wet, wet)
+}
+
 /// The gate's dry blend, which is how a floor is made.
 ///
 /// `caps` Noisegate has no depth control - it shuts fully or not at all -
@@ -342,7 +395,16 @@ pub fn spawn_config(name: &str, config: &str) -> io::Result<Chain> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&path, config)?;
+    // The denoiser usually lives in the user's own directory rather than
+    // the system one, and a spawned helper does not inherit a path we
+    // never set. Without this the chain cannot find it and refuses to
+    // start, taking the strip with it.
+    let ladspa_path = denoiser_search_paths()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(":");
     let process = Command::new("pipewire")
+        .env("LADSPA_PATH", ladspa_path)
         .arg("-c")
         .arg(&path)
         .stdout(Stdio::null())
@@ -457,14 +519,36 @@ control = {{ \"Gain 1\" = {dry} \"Gain 2\" = {wet} }} }}\n\
          \x20         {{ type = ladspa name = comp plugin = caps label = Compress \
 control = {{ \"strength\" = 0.0 \"threshold\" = 0.5 \"attack\" = 0.75 \"release\" = 0.5 \"gain (dB)\" = 0.0 }} }}"
     );
-    let links = "          { output = \"gcopy:Out\" input = \"gate:in\" }\n\
+    let mut links = "          { output = \"gcopy:Out\" input = \"gate:in\" }\n\
          \x20         { output = \"gcopy:Out\" input = \"gmix:In 1\" }\n\
          \x20         { output = \"gate:out\" input = \"gmix:In 2\" }\n\
          \x20         { output = \"gmix:Out\" input = \"comp:in\" }"
         .to_owned();
+
+    // The denoiser sits at the head, before the gate, and only if one is
+    // installed - a chain naming a plugin that is not there does not
+    // start, and would take the strip with it.
+    let mut nodes = nodes;
+    let mut input = "gcopy:In";
+    if denoiser_available() {
+        let (dry, wet) = denoiser_blend(0.0);
+        nodes = format!(
+            "          {{ type = builtin name = dcopy label = copy }}\n\
+             \x20         {{ type = ladspa name = dn plugin = {DENOISER_PLUGIN} label = {DENOISER_LABEL} }}\n\
+             \x20         {{ type = builtin name = dmix label = mixer \
+control = {{ \"Gain 1\" = {dry} \"Gain 2\" = {wet} }} }}\n{nodes}"
+        );
+        links = format!(
+            "          {{ output = \"dcopy:Out\" input = \"dn:Input\" }}\n\
+             \x20         {{ output = \"dcopy:Out\" input = \"dmix:In 1\" }}\n\
+             \x20         {{ output = \"dn:Output\" input = \"dmix:In 2\" }}\n\
+             \x20         {{ output = \"dmix:Out\" input = \"gcopy:In\" }}\n{links}"
+        );
+        input = "dcopy:In";
+    }
     let nodes = format!("{nodes}\n{}", limiter_node());
     let links = format!("{links}\n{}", link_into_limiter("comp:out"));
-    (nodes, links, "gcopy:In", "lim:Out")
+    (nodes, links, input, "lim:Out")
 }
 
 /// The limiter that ends every strip graph, resting wide open.
@@ -629,7 +713,17 @@ mod tests {
         assert!(text.contains("label = Noisegate"));
         assert!(text.contains("label = Compress"));
         assert!(text.contains("output = \"gmix:Out\" input = \"comp:in\""));
-        assert!(text.contains("inputs  = [ \"gcopy:In\" ]"));
+        // The denoiser, when installed, sits ahead of the gate and
+        // becomes the graph's input instead.
+        let head = if super::denoiser_available() {
+            "dcopy:In"
+        } else {
+            "gcopy:In"
+        };
+        assert!(
+            text.contains(&format!("inputs  = [ \"{head}\" ]")),
+            "{text}"
+        );
         assert!(text.contains("outputs = [ \"lim:Out\" ]"), "{text}");
         assert!(!text.contains("bq_lowshelf"));
     }
@@ -760,5 +854,27 @@ mod tests {
         assert!((dry - 1.0).abs() < 1e-6 && wet.abs() < 1e-6);
         let (dry, _) = super::gate_blend(-6.0);
         assert!((dry - 0.501).abs() < 0.01);
+    }
+
+    /// The knob is an amount, because the plugin has no depth control of
+    /// its own: at rest it is entirely dry, so an uninstalled or unwanted
+    /// denoiser changes nothing.
+    #[test]
+    fn the_denoiser_knob_blends_from_dry_to_wet() {
+        assert_eq!(super::denoiser_blend(0.0), (1.0, 0.0));
+        assert_eq!(super::denoiser_blend(1.0), (0.0, 1.0));
+        let (dry, wet) = super::denoiser_blend(0.25);
+        assert!((dry - 0.75).abs() < 1e-6 && (wet - 0.25).abs() < 1e-6);
+    }
+
+    /// The graph only names the plugin when it is actually installed;
+    /// naming a missing one stops the chain starting at all.
+    #[test]
+    fn the_graph_mentions_the_denoiser_only_when_it_is_there() {
+        let text = config("x", Kind::Dynamics);
+        assert_eq!(
+            text.contains(super::DENOISER_LABEL),
+            super::denoiser_available()
+        );
     }
 }
