@@ -140,10 +140,18 @@ impl Kind {
     fn processing(self) -> (String, String) {
         match self {
             Self::Reverb => (
+                // Plate takes one input, so the two sides have to become
+                // one. Averaged rather than dropped: linking only sumL,
+                // as this did, threw away the right channel of every
+                // strip's send without saying so.
                 "          { type = ladspa name = verb plugin = caps label = Plate \
-control = { \"blend\" = 0.25 \"tail\" = 0.5 \"damping\" = 0.25 \"bandwidth\" = 0.75 } }"
+control = { \"blend\" = 0.25 \"tail\" = 0.5 \"damping\" = 0.25 \"bandwidth\" = 0.75 } }\n\
+         \x20         { type = builtin name = vmono label = mixer \
+control = { \"Gain 1\" = 0.5 \"Gain 2\" = 0.5 } }"
                     .to_owned(),
-                "          { output = \"sumL:Out\" input = \"verb:in\" }\n\
+                "          { output = \"sumL:Out\" input = \"vmono:In 1\" }\n\
+                 \x20         { output = \"sumR:Out\" input = \"vmono:In 2\" }\n\
+                 \x20         { output = \"vmono:Out\" input = \"verb:in\" }\n\
                  \x20         { output = \"verb:out.l\" input = \"outL:In\" }\n\
                  \x20         { output = \"verb:out.r\" input = \"outR:In\" }"
                     .to_owned(),
@@ -436,5 +444,20 @@ mod tests {
     fn the_two_chains_have_different_names() {
         assert_ne!(Kind::Reverb.node(), Kind::Delay.node());
         assert!(config(Kind::Delay).contains("pipemeter_delay"));
+    }
+
+    /// Every summing mixer's output has to go somewhere. sumR's did not,
+    /// so the right channel of every send was discarded.
+    #[test]
+    fn both_sides_of_the_sum_reach_the_effect() {
+        for kind in [Kind::Reverb, Kind::Delay] {
+            let text = config(kind);
+            for side in ["sumL", "sumR"] {
+                assert!(
+                    text.contains(&format!("output = \"{side}:Out\"")),
+                    "{kind:?} never uses {side}"
+                );
+            }
+        }
     }
 }
