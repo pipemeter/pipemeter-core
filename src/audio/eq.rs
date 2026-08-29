@@ -187,6 +187,44 @@ pub fn gate_knob_from_db(db: f32) -> f32 {
 /// milliseconds, like the settings file, but only up to five.
 pub const GATE_ATTACK: &str = "gate:attack (ms)";
 
+/// Where the gate actually shuts.
+///
+/// `open (dB)` is where it lets go and `close (dB)` is where it clamps
+/// down, and it is the second that decides whether anything is gated at
+/// all. This was fixed at -80 dB, which nothing reaches, so the gate
+/// opened on the first sound and never closed again: measured against a
+/// staircase it passed all ten steps from -33 to -6 dBFS untouched. With
+/// a close threshold four decibels under the open one it gates what it
+/// should - -33 silenced, the rest through.
+pub const GATE_CLOSE: &str = "gate:close (dB)";
+
+/// How far under the open threshold the gate shuts.
+///
+/// Hysteresis, so a signal sitting on the threshold does not chatter.
+const GATE_HYSTERESIS: f32 = 4.0;
+
+/// The close threshold for an open one.
+#[must_use]
+pub fn gate_close_db(open_db: f32) -> f32 {
+    (open_db - GATE_HYSTERESIS).clamp(-80.0, 0.0)
+}
+
+/// The gate's dry blend, which is how a floor is made.
+///
+/// `caps` Noisegate has no depth control - it shuts fully or not at all -
+/// so the floor comes from mixing the ungated signal back in, which is
+/// what `onjoakimsmind/pipemeeter` does and where the idea came from.
+/// Damping in decibels becomes the dry side's gain.
+pub const GATE_DRY: &str = "gmix:Gain 1";
+pub const GATE_WET: &str = "gmix:Gain 2";
+
+/// The dry gain for a damping in dB, and the wet gain that goes with it.
+#[must_use]
+pub fn gate_blend(damping_db: f32) -> (f32, f32) {
+    let dry = 10.0f32.powf(damping_db.clamp(-80.0, 0.0) / 20.0);
+    (dry, (1.0 - dry).clamp(0.0, 1.0))
+}
+
 /// The Comp knob is the compressor's strength directly, both being 0..1.
 #[must_use]
 pub fn comp_strength(knob: f32) -> f32 {
@@ -404,16 +442,29 @@ fn bus_equaliser_graph() -> (String, String, &'static str, &'static str) {
 /// a desktop's LADSPA set; a machine without them gets a chain that fails to
 /// start and a strip that carries on without dynamics.
 fn dynamics_graph() -> (String, String, &'static str, &'static str) {
+    // A copy feeds both the gate and a mixer, and the mixer blends the
+    // ungated signal back in - which is how the gate gets a floor, since
+    // caps Noisegate shuts fully or not at all. Borrowed from
+    // onjoakimsmind/pipemeeter, which is MIT.
+    let close = gate_close_db(GATE_OPEN_MIN);
+    let (dry, wet) = gate_blend(-80.0);
     let nodes = format!(
-        "          {{ type = ladspa name = gate plugin = caps label = Noisegate \
-control = {{ \"open (dB)\" = {GATE_OPEN_MIN} \"attack (ms)\" = 0.0 \"close (dB)\" = -80.0 }} }}\n\
+        "          {{ type = builtin name = gcopy label = copy }}\n\
+         \x20         {{ type = ladspa name = gate plugin = caps label = Noisegate \
+control = {{ \"open (dB)\" = {GATE_OPEN_MIN} \"attack (ms)\" = 0.0 \"close (dB)\" = {close} }} }}\n\
+         \x20         {{ type = builtin name = gmix label = mixer \
+control = {{ \"Gain 1\" = {dry} \"Gain 2\" = {wet} }} }}\n\
          \x20         {{ type = ladspa name = comp plugin = caps label = Compress \
 control = {{ \"strength\" = 0.0 \"threshold\" = 0.5 \"attack\" = 0.75 \"release\" = 0.5 \"gain (dB)\" = 0.0 }} }}"
     );
-    let links = "          { output = \"gate:out\" input = \"comp:in\" }".to_owned();
+    let links = "          { output = \"gcopy:Out\" input = \"gate:in\" }\n\
+         \x20         { output = \"gcopy:Out\" input = \"gmix:In 1\" }\n\
+         \x20         { output = \"gate:out\" input = \"gmix:In 2\" }\n\
+         \x20         { output = \"gmix:Out\" input = \"comp:in\" }"
+        .to_owned();
     let nodes = format!("{nodes}\n{}", limiter_node());
     let links = format!("{links}\n{}", link_into_limiter("comp:out"));
-    (nodes, links, "gate:in", "lim:Out")
+    (nodes, links, "gcopy:In", "lim:Out")
 }
 
 /// The limiter that ends every strip graph, resting wide open.
@@ -577,8 +628,8 @@ mod tests {
         let text = config("x", Kind::Dynamics);
         assert!(text.contains("label = Noisegate"));
         assert!(text.contains("label = Compress"));
-        assert!(text.contains("output = \"gate:out\" input = \"comp:in\""));
-        assert!(text.contains("inputs  = [ \"gate:in\" ]"));
+        assert!(text.contains("output = \"gmix:Out\" input = \"comp:in\""));
+        assert!(text.contains("inputs  = [ \"gcopy:In\" ]"));
         assert!(text.contains("outputs = [ \"lim:Out\" ]"), "{text}");
         assert!(!text.contains("bq_lowshelf"));
     }
@@ -684,5 +735,30 @@ mod tests {
             let back = super::gate_knob_from_db(super::gate_open_db(knob));
             assert!((back - knob).abs() < 1e-5, "{knob} came back as {back}");
         }
+    }
+
+    /// The close threshold is what actually gates. It was pinned at -80,
+    /// which nothing reaches, so the gate never shut.
+    #[test]
+    fn the_gate_closes_below_where_it_opens() {
+        assert!(super::gate_close_db(-30.0) < -30.0);
+        assert!(
+            super::gate_close_db(-78.0) >= -80.0,
+            "clamped to the port's range"
+        );
+        let text = config("x", Kind::Dynamics);
+        assert!(!text.contains("\"close (dB)\" = -80"), "{text}");
+    }
+
+    /// Damping is a floor: fully damped passes only the gated signal,
+    /// undamped passes the dry one and nothing else.
+    #[test]
+    fn damping_blends_the_dry_signal_back() {
+        let (dry, wet) = super::gate_blend(-80.0);
+        assert!(dry < 0.001 && (wet - 1.0).abs() < 0.001);
+        let (dry, wet) = super::gate_blend(0.0);
+        assert!((dry - 1.0).abs() < 1e-6 && wet.abs() < 1e-6);
+        let (dry, _) = super::gate_blend(-6.0);
+        assert!((dry - 0.501).abs() < 0.01);
     }
 }

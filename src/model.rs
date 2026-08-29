@@ -261,7 +261,11 @@ impl Default for Gate {
     fn default() -> Self {
         Self {
             threshold: -60.0,
-            damping: 0.0,
+            // Decibels of attenuation when the gate is shut, and it has
+            // to default to "shut properly". Zero means no attenuation,
+            // which is a gate that does nothing - and a real settings
+            // file writes -60 here, not 0.
+            damping: -60.0,
             sidechain: 1000.0,
             attack: 1.0,
             hold: 500.0,
