@@ -138,8 +138,6 @@ pub fn spawn() -> (Receiver<Event>, pipewire::channel::Sender<Command>, Levels) 
     let levels: Levels = std::sync::Arc::default();
     let levels_thread = std::sync::Arc::clone(&levels);
 
-    // A detached thread: the loop ends when the process does. There is no
-    // clean shutdown to wait for, and blocking the UI on one would be worse.
     thread::Builder::new()
         .name("pipewire".to_owned())
         .spawn(move || {
@@ -160,26 +158,16 @@ fn run(
 ) -> Result<(), pipewire::Error> {
     pipewire::init();
 
-    // 0.10 splits these into Rc and Box flavours; the Rc ones are what the
-    // listener closures need to outlive this function.
     let mainloop = pipewire::main_loop::MainLoopRc::new(None)?;
     let context = pipewire::context::ContextRc::new(&mainloop, None)?;
     let core = context.connect_rc(None)?;
     let registry = core.get_registry_rc()?;
 
-    // Proxies for sinks this run created. Kept only so they are not dropped
-    // mid-creation; with object.linger set, dropping them no longer removes
-    // anything.
     let sinks: Rc<RefCell<Vec<pipewire::node::Node>>> = Rc::new(RefCell::new(Vec::new()));
     let sinks_cmd = Rc::clone(&sinks);
 
-    // Our own sinks as the registry sees them, name to global id. Populated
-    // for sinks left behind by a previous run as well as ones we make, so
-    // either can be removed.
     let owned: Rc<RefCell<HashMap<String, Owned>>> = Rc::new(RefCell::new(HashMap::new()));
 
-    // Bound proxies for every audio node, so their volume can be set. A
-    // registry id alone is not enough: params go through a proxy.
     let controls: Rc<RefCell<HashMap<u32, pipewire::node::Node>>> =
         Rc::new(RefCell::new(HashMap::new()));
     let (controls_add, controls_gone, controls_cmd) = (
@@ -189,7 +177,6 @@ fn run(
     );
     let registry_bind = registry.clone();
 
-    // One capture stream per metered node, held for as long as the node is.
     let attached: Rc<RefCell<HashMap<u32, Meter>>> = Rc::new(RefCell::new(HashMap::new()));
     let (attached_add, attached_gone) = (Rc::clone(&attached), Rc::clone(&attached));
 
@@ -201,24 +188,17 @@ fn run(
         (Rc::clone(&owned), Rc::clone(&owned), Rc::clone(&owned));
     let registry_cmd = registry.clone();
 
-    // Shared between the registry listener (which fills it) and the command
-    // handler (which routes with it). The loop is single-threaded, so a
-    // RefCell is enough and no lock is needed.
     let router = Rc::new(RefCell::new(Router::default()));
 
-    // One per closure, since each is `move`.
     let (added, added_stream, removed) = (tx.clone(), tx.clone(), tx.clone());
     let (router_add, router_remove) = (Rc::clone(&router), Rc::clone(&router));
     let core_ports = core.clone();
     let router_cmd = Rc::clone(&router);
     let core_cmd = core.clone();
 
-    // Held for the lifetime of the loop; dropping it unsubscribes.
     let _listener = registry
         .add_listener_local()
         .global(move |global| {
-            // Every handle adopting a node needs, built once for both the
-            // device and the stream branch below.
             let handles = Adopt {
                 registry: &registry_bind,
                 controls: &controls_add,
@@ -246,25 +226,18 @@ fn run(
             } else if let Some(link) = describe_link(global) {
                 let _ = added_stream.send(Event::LinkAdded(link));
             } else if let Some(port) = describe_port(global) {
-                // A node is registered before its ports are, so a route asked
-                // for the moment a sink appears has nothing to connect yet.
-                // Every arriving port is a chance to complete one.
                 let mut router = router_add.borrow_mut();
                 router.add_port(port);
                 router.retry_pending(&core_ports);
             }
         })
         .global_remove(move |id| {
-            // The id may be a node or a port; both need clearing, and only
-            // one of the two will actually match anything.
             {
                 let mut router = router_remove.borrow_mut();
                 router.remove_port(id);
                 router.forget_node(id);
             }
             owned_gone.borrow_mut().retain(|_, owned| owned.id != id);
-            // Dropping the meter stops its capture stream. Without this the
-            // stream would outlive the node it was measuring.
             attached_gone.borrow_mut().remove(&id);
             controls_gone.borrow_mut().remove(&id);
             formats_gone.borrow_mut().remove(&id);
@@ -272,8 +245,6 @@ fn run(
         })
         .register();
 
-    // Everything the command handler needs, bundled so `run` does not end
-    // up threading six clones through a closure inline.
     let context = CommandContext::new(
         core_cmd,
         registry_cmd,
@@ -282,9 +253,6 @@ fn run(
         owned_cmd,
         controls_cmd,
     );
-    // Ask the server to tell us when it has finished replaying the registry.
-    // Until that arrives, `owned` is incomplete, and creating sinks against
-    // it would duplicate whatever a previous run left lingering.
     let _core_listener = watch_core(&core, &mainloop, tx)?;
 
     let _commands = commands.attach(mainloop.loop_(), move |command| {
@@ -329,14 +297,6 @@ fn watch_core(
             }
         })
         .error(move |id, _seq, res, message| {
-            // Only a broken pipe means the server has gone. Every other core
-            // error is something one request did wrong - a link to a port
-            // that vanished, most often - and those are routine while the
-            // graph is still settling.
-            //
-            // Treating them all as a disconnect tore down the whole
-            // connection twice on every startup, which took the FX chains
-            // with it and left them linked to nothing.
             let fatal = res == -libc_epipe();
             if id == pipewire::core::PW_ID_CORE && fatal {
                 let _ = lost.send(Event::Disconnected(format!("{message} ({res})")));
@@ -413,8 +373,6 @@ impl CommandContext {
 /// callers push controls repeatedly, so a chain that comes up late gets its
 /// levels on the following pass rather than never.
 fn write_controls(context: &CommandContext, node: u32, controls: Vec<(String, f32)>) {
-    // Anything held from an earlier write goes out first, so the
-    // order the caller sent them in survives.
     let held: Vec<(u32, Vec<(String, f32)>)> = {
         let mut pending = context.pending.borrow_mut();
         let bound = context.controls.borrow();
@@ -441,9 +399,6 @@ fn write_controls(context: &CommandContext, node: u32, controls: Vec<(String, f3
             set_controls(proxy, &controls);
         }
     } else {
-        // Replaced rather than appended: a later write for the same
-        // node is the newer truth, and queueing both would push a
-        // stale level out first.
         context.pending.borrow_mut().insert(node, controls);
     }
 }
@@ -465,9 +420,6 @@ fn handle(context: &CommandContext, command: Command) {
                 .set_route(&context.core, route, enabled);
         }
         Command::CreateDevices => {
-            // Anything left behind with the wrong class is from an older
-            // build and has to go, or it would be adopted and the bus would
-            // stay filed as a speaker.
             let stale: Vec<(String, u32)> = context
                 .owned
                 .borrow()
@@ -481,10 +433,6 @@ fn handle(context: &CommandContext, command: Command) {
                 context.owned.borrow_mut().remove(&name);
             }
 
-            // Adopt whatever else a previous run left behind rather than
-            // making a second set beside it.
-            // Named, because `create_missing` is generic over the hasher
-            // and cannot infer which one an anonymous collect meant.
             let existing: std::collections::HashSet<String> =
                 context.owned.borrow().keys().cloned().collect();
             let mut made = super::sinks::create_missing(&context.core, &existing);
@@ -494,22 +442,13 @@ fn handle(context: &CommandContext, command: Command) {
             for owned in context.owned.borrow().values() {
                 let _ = context.registry.destroy_global(owned.id).into_result();
             }
-            // The registry's global_remove clears the map; dropping our
-            // proxies here just releases them.
             context.sinks.borrow_mut().clear();
         }
         Command::RecreateDevices => {
-            // Both halves on the thread that owns them, which is what makes
-            // this safe where sending the two commands in sequence is not:
-            // neither has happened by the time its call returns.
             for owned in context.owned.borrow().values() {
                 let _ = context.registry.destroy_global(owned.id).into_result();
             }
             context.sinks.borrow_mut().clear();
-            // Cleared here rather than waiting for `global_remove`, which
-            // arrives later. `create_missing` skips any name it finds in
-            // this map, so leaving the old ones in would create nothing at
-            // all and the devices would simply disappear.
             context.owned.borrow_mut().clear();
             let mut made =
                 super::sinks::create_missing(&context.core, &std::collections::HashSet::new());
@@ -525,8 +464,6 @@ fn handle(context: &CommandContext, command: Command) {
             context.router.borrow_mut().retry_pending(&context.core);
         }
         Command::Record { takes, rate } => {
-            // Dropping the old ones first finalises their files, so starting
-            // a new take cannot leave the last one truncated.
             context.recorder.borrow_mut().clear();
             let started: Vec<_> = takes
                 .iter()
@@ -599,13 +536,6 @@ fn adopt_stream(
         ),
     }
 
-    // And a meter, so the application's row can show a level.
-    //
-    // Targeted by node name and *not* as a sink capture: an application is a
-    // source of audio, and there is no monitor on it to ask for. Whether the
-    // session manager will link a capture stream to another stream's output
-    // is not something PipeWire promises, so this is allowed to come to
-    // nothing - the row then shows no movement, which is what it did before.
     if stream.node_name.is_empty() {
         return;
     }
@@ -635,12 +565,6 @@ fn adopt(global: &pipewire::registry::GlobalObject<&DictRef>, device: &Device, i
     } = into;
     let id = device.id;
     if let Ok(node) = registry.bind::<pipewire::node::Node, _>(global) {
-        // The node's own info carries what the registry announcement does
-        // not: the channel count and the rate. The listener is kept in the
-        // same map as the proxy, since both live exactly as long as the
-        // node does.
-        // Cloned through the reference: `tx` is borrowed from `Adopt`, and
-        // the info closure has to own its sender.
         let report = Sender::clone(tx);
         let listener = node
             .add_listener_local()
@@ -657,25 +581,14 @@ fn adopt(global: &pipewire::registry::GlobalObject<&DictRef>, device: &Device, i
         formats.borrow_mut().insert(id, listener);
     }
 
-    // Our own filter chains are plumbing, not strips: nothing shows their
-    // level, and they are streams rather than devices so a capture stream
-    // cannot target them anyway. Left in, each one attached to the default
-    // device instead and its readings were added to whatever was there -
-    // which is how the microphone's meter came to carry six other nodes.
     if super::eq::is_chain_node(&device.name) {
         return;
     }
 
-    // Metering every node we surface costs a stream each, but the
-    // alternative is guessing which ones a strip will end up pointed at.
     let mut held = meters_held.borrow_mut();
     let target = meters::Target {
         id,
         name: device.name.clone(),
-        // Every device we make is a null sink underneath, whatever class it
-        // is declared as, so the mix is on its monitor. Reading a bus's
-        // plain source output gives silence - measured - which is why the B
-        // meters sat still while the buses carried audio.
         is_sink: device.class == "Audio/Sink",
     };
     if let std::collections::hash_map::Entry::Vacant(slot) = held.entry(id)
@@ -782,7 +695,6 @@ fn node_rate(props: &DictRef) -> Option<u32> {
     if let Some(rate) = props.get("clock.rate").and_then(|r| r.parse().ok()) {
         return Some(rate);
     }
-    // `1/48000`, where the denominator is the rate.
     props
         .get("node.rate")
         .and_then(|r| r.split_once('/'))
@@ -808,19 +720,12 @@ fn node_channels(props: &DictRef) -> Option<u32> {
 fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Device> {
     let props = global.props?;
     let class = props.get("media.class")?;
-    // A chain's input is a stream that consumes, so it is a sink as far as
-    // routing is concerned, and its output is a source.
     let ours = props.get("node.name").is_some_and(super::eq::is_chain_node);
     let direction = match class {
         "Audio/Sink" => Direction::Sink,
         "Audio/Source" => Direction::Source,
-        // Our buses are sinks too, so they need no arm of their own. If
-        // CLASS_BUS ever becomes a source class again, one goes here: the
-        // mixer routes *into* a bus whatever the desktop calls it.
         "Stream/Input/Audio" if ours => Direction::Sink,
         "Stream/Output/Audio" if ours => Direction::Source,
-        // Audio/Duplex and the various Stream classes are not devices the
-        // mixer assigns to a strip, so they are skipped.
         _ => return None,
     };
 
@@ -847,8 +752,6 @@ fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Devic
 /// application playing audio.
 fn describe_stream(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Stream> {
     let props = global.props?;
-    // Only playback streams: a capture stream is an application listening,
-    // not one feeding a strip.
     if props
         .get("node.name")
         .is_some_and(|n| n.contains("pipemeter"))
@@ -893,14 +796,10 @@ fn describe_port(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<
     Some(Port {
         id: global.id,
         node_id,
-        // port.id numbers the ports of one direction on one node, which is
-        // exactly the ordering a send needs to pick a pair out of.
         slot: props
             .get("port.id")
             .and_then(|i| i.parse().ok())
             .unwrap_or(0),
-        // Ports with no channel (MIDI, control) are filtered out when
-        // routing rather than here, so the map stays a faithful mirror.
         channel: props.get("audio.channel").unwrap_or_default().to_owned(),
         direction,
     })

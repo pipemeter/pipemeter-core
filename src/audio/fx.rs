@@ -52,14 +52,6 @@
 //! *before* any send or return level is pushed, and a chain that has fallen
 //! idle has to be written again when it comes back.
 
-// Nothing spawns these yet: the graphs are generated and verified live, but
-// the mixer does not start them, route them or drive their knobs. Kept whole
-// rather than trimmed to what compiles, because the shape is the part that
-// took the work and the remaining steps are named in TODO.md.
-//
-// Unlike the FX sends this replaces, none of it can misbehave in the
-// meantime - it builds a string nobody runs.
-
 use std::fmt::Write as _;
 use std::io;
 
@@ -168,8 +160,6 @@ control = { \"Delay (s)\" = 0.25 \"Feedback\" = 0.3 } }"
                  \x20         { output = \"dlyR:Out\" input = \"outR:In\" }"
                     .to_owned(),
             ),
-            // Straight through: the mix is the product, so there is nothing
-            // between the summing and the output.
             Self::External1 | Self::External2 | Self::Return1 | Self::Return2 => (
                 String::new(),
                 "          { output = \"sumL:Out\" input = \"outL:In\" }\n\
@@ -217,8 +207,6 @@ pub fn config(kind: Kind) -> String {
     let mut nodes = String::new();
     let mut links = String::new();
 
-    // One gain per strip per channel, on the way in. These are the send
-    // knobs, and the reason the gain lives here rather than on the strips.
     for strip in 0..STRIPS {
         for side in ["L", "R"] {
             let _ = writeln!(
@@ -228,9 +216,6 @@ control = {{ \"Mult\" = 0.0 \"Add\" = 0.0 }} }}"
             );
         }
     }
-    // Two mixers to sum them. Their gains are fixed at unity here because a
-    // mixer's gains cannot be written at runtime - which is fine, since all
-    // this one does is add.
     for side in ["L", "R"] {
         let gains = (1..=STRIPS)
             .map(|i| format!("\"Gain {i}\" = 1.0"))
@@ -255,15 +240,11 @@ control = {{ {gains} }} }}"
     links.push_str(&effect_links);
     links.push('\n');
 
-    // The effect's own output, then whatever carries it away.
     for side in ["L", "R"] {
         let _ = writeln!(
             nodes,
             "          {{ type = builtin name = out{side} label = copy }}"
         );
-        // A returning effect gets one gain per bus, which are the FX RETURN
-        // knobs. A send has nowhere to return to: its output is the product,
-        // for another program to capture, so it ends at `out`.
         if kind.returns_to_buses() {
             for bus in 0..BUSES {
                 let _ = writeln!(
@@ -290,10 +271,6 @@ fn wrap(name: &str, nodes: &str, links: &str, kind: Kind) -> String {
         .flat_map(|s| [format!("\"s{s}L:In\""), format!("\"s{s}R:In\"")])
         .collect::<Vec<_>>()
         .join(" ");
-    // One pair per bus for a returning effect, a single pair for a send.
-    // The count has to match what the graph actually produces: a chain
-    // declaring more outputs than it has breaks its channel mapping and
-    // passes silence, which is how every strip went quiet once.
     let output_pairs = if kind.returns_to_buses() { BUSES } else { 1 };
     let outputs = if kind.returns_to_buses() {
         (0..BUSES)
@@ -377,7 +354,6 @@ mod tests {
         let send = config(Kind::External1);
         assert!(send.contains("\"outL:Out\" \"outR:Out\""), "{send}");
         assert!(!send.contains("r0L:Out"), "a send has no per-bus returns");
-        // And the returning effects still do.
         assert!(config(Kind::Reverb).contains("r0L:Out"));
     }
 
@@ -391,10 +367,6 @@ mod tests {
 
     #[test]
     fn every_input_and_output_is_named_one_for_one() {
-        // The whole point. A chain whose named ports do not match its
-        // channel counts leaves filter-chain duplicating the graph and
-        // guessing an order, and what it guesses is wrong - that is what
-        // silenced every strip the first time this was attempted.
         let text = config(Kind::Reverb);
         let inputs = text
             .lines()
@@ -435,8 +407,6 @@ mod tests {
 
     #[test]
     fn everything_starts_silent() {
-        // A chain that came up sending would put every strip into the reverb
-        // the moment the mixer started.
         let text = config(Kind::Reverb);
         assert_eq!(
             text.matches("\"Mult\" = 0.0").count(),
@@ -447,8 +417,6 @@ mod tests {
 
     #[test]
     fn the_summing_mixers_are_fixed_at_unity() {
-        // They can only be set once, in the config, so this is the only
-        // chance to get them right - and all they do is add.
         let text = config(Kind::Reverb);
         assert_eq!(text.matches("\"Gain 1\" = 1.0").count(), 2);
         assert_eq!(text.matches(&format!("\"Gain {STRIPS}\" = 1.0")).count(), 2);
@@ -456,8 +424,6 @@ mod tests {
 
     #[test]
     fn both_effects_reach_the_same_output_nodes() {
-        // The two chains differ only in what sits between the sum and the
-        // returns; everything either side is shared.
         for kind in [Kind::Reverb, Kind::Delay] {
             let text = config(kind);
             assert!(text.contains("input = \"outL:In\""), "{kind:?}");

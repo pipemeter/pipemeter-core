@@ -17,7 +17,6 @@ use std::path::PathBuf;
 /// A held claim. Dropping it, or exiting, releases the lock.
 #[derive(Debug)]
 pub struct Guard {
-    // Kept for its lifetime: the lock lives on the open descriptor.
     _file: File,
 }
 
@@ -37,11 +36,8 @@ pub fn claim() -> io::Result<Option<Guard>> {
     }
     let file = File::create(&path)?;
 
-    // Exclusive, and non-blocking so a second copy reports at once rather
-    // than hanging until the first quits.
     match file.try_lock() {
         Ok(()) => Ok(Some(Guard { _file: file })),
-        // Held by another copy, which is the case this exists for.
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(err)) => Err(err),
     }
@@ -67,9 +63,6 @@ mod tests {
 
     #[test]
     fn a_second_claim_in_this_process_still_sees_the_file() {
-        // Not a lock test: flock is per open file description, so a second
-        // claim here would succeed. This only pins that the path is stable,
-        // which is what makes the lock mean anything across processes.
         assert_eq!(lock_path(), lock_path());
     }
 }

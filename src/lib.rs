@@ -11,10 +11,6 @@
 //! strip *is* with how it is painted.
 
 #![forbid(unsafe_code)]
-// Every public item here is public only because the binary is a separate
-// crate now, not because this is an API anyone else consumes. Annotating
-// a hundred internal getters would be noise that hides the ones where
-// dropping the result is a real mistake.
 #![allow(clippy::must_use_candidate)]
 
 pub mod audio;

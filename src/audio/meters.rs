@@ -66,20 +66,10 @@ pub fn attach(core: &CoreRc, node: &Target, levels: &Levels) -> Option<Meter> {
         *pipewire::keys::MEDIA_TYPE => "Audio",
         *pipewire::keys::MEDIA_CATEGORY => "Capture",
         *pipewire::keys::MEDIA_ROLE => "Music",
-        // By name, not by id. An id is a number the session manager is free
-        // to ignore when it thinks it knows better, and it did: every meter
-        // ended up on the default sink's monitor, so each strip showed
-        // whatever the desktop was playing rather than its own signal.
         *pipewire::keys::TARGET_OBJECT => node.name.as_str(),
-        // And having said which node, refuse to be moved off it. Without
-        // this the session manager reconnects the stream elsewhere the
-        // moment the default device changes.
         *pipewire::keys::NODE_DONT_RECONNECT => "true",
-        // Keep our own meters out of the strips' application lists.
         *pipewire::keys::NODE_NAME => "pipemeter_meter",
     };
-    // Only a sink has a monitor to read. Asking for one on a source makes
-    // the request meaningless, which is how it came to be ignored.
     if node.is_sink {
         props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
     }
@@ -104,8 +94,6 @@ pub fn attach(core: &CoreRc, node: &Target, levels: &Levels) -> Option<Meter> {
             if media_type != MediaType::Audio || media_subtype != MediaSubtype::Raw {
                 return;
             }
-            // Ignoring the error leaves the previous format in place, which
-            // is better than tearing the meter down over one bad param.
             let _ = user_data.format.parse(param);
         })
         .process(|stream, user_data| {
@@ -131,8 +119,6 @@ pub fn attach(core: &CoreRc, node: &Target, levels: &Levels) -> Option<Meter> {
         .register()
         .ok()?;
 
-    // Empty format list: accept whatever the graph is already running at,
-    // rather than forcing a conversion just to measure.
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
     let obj = spa::pod::Object {
@@ -199,7 +185,6 @@ mod tests {
 
     #[test]
     fn stereo_channels_are_read_separately() {
-        // L, R, L, R
         let bytes = interleaved(&[0.25, 0.75, -0.5, 0.1]);
         let (l, r) = peak_per_channel(&bytes, 4, 2);
         assert!((l - 0.5).abs() < f32::EPSILON, "left peak was {l}");
@@ -222,7 +207,6 @@ mod tests {
 
     #[test]
     fn a_short_buffer_does_not_panic() {
-        // Claims more samples than the bytes actually hold.
         let bytes = interleaved(&[0.5]);
         let (l, _) = peak_per_channel(&bytes, 16, 2);
         assert!((l - 0.5).abs() < f32::EPSILON);

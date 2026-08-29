@@ -83,9 +83,6 @@ impl Mode {
             Self::UpMix21 => 3,
             Self::UpMix41 => 5,
             Self::UpMix61 => 7,
-            // Composite and TV Mix are down-mixes onto a stereo pair, and
-            // the three extract modes carry one channel spread over the pair,
-            // so all of them read as stereo.
             _ => 2,
         }
     }

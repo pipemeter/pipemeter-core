@@ -102,8 +102,6 @@ impl Chain {
 
 impl Drop for Chain {
     fn drop(&mut self) {
-        // The helper is ours; leaving it behind would leave an orphan node in
-        // the graph with nothing driving it.
         let _ = self.process.kill();
         let _ = self.process.wait();
     }
@@ -151,20 +149,11 @@ pub fn kill_leftovers() {
         let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
             continue;
         };
-        // Arguments are NUL-separated, so this is a plain substring search.
-        //
-        // The directory is the whole test. It used to also require an _eq or
-        // _fx suffix, which quietly stopped covering anything once the
-        // effect chains arrived with names of their own - and a helper this
-        // does not match is one that outlives the mixer holding its node
-        // names, which is the exact fault this function exists for.
         let text = String::from_utf8_lossy(&cmdline);
         if !text.contains(marker.to_string_lossy().as_ref()) || !text.contains(".conf") {
             continue;
         }
         log::info!("killing a leftover helper, pid {pid}");
-        // `kill` rather than a signal of our own: these are our processes and
-        // the point is that they are already unsupervised.
         let _ = std::process::Command::new("kill")
             .arg("-9")
             .arg(pid.to_string())
@@ -237,21 +226,6 @@ fn config(name: &str, kind: Kind) -> String {
         Kind::Equaliser => equaliser_graph(),
         Kind::Dynamics => dynamics_graph(),
     };
-    // Every strip carries its two FX sends beside its own output: a gain
-    // node each, fed from the same place the strip's output comes from.
-    // `PipeWire` links carry no gain of their own, so this is the only place
-    // a send level can live.
-    // One output, and only one.
-    //
-    // This graph used to declare two more - a gain node each for the reverb
-    // and delay sends - against a six-channel playback side. Nothing ever
-    // drove them, and they did not merely sit idle: with three graph outputs
-    // replicated across two capture channels, the strip's own output stopped
-    // arriving on the playback node's front pair, and every chain passed
-    // silence. Audio went into the equaliser and none came out.
-    //
-    // The sends have to come back for the internal FX to work, but not like
-    // this. See the FX section of TODO.md.
     wrap(name, &nodes, &links, input, &format!("\"{output}\""))
 }
 
@@ -295,9 +269,6 @@ control = {{ \"strength\" = 0.0 \"threshold\" = 0.5 \"attack\" = 0.75 \"release\
 
 /// The boilerplate every chain shares.
 fn wrap(name: &str, nodes: &str, links: &str, input: &str, output: &str) -> String {
-    // The playback side carries one stereo pair per graph output. The extra
-    // pairs have no meaningful speaker position, so they take AUX slots:
-    // what matters is that they are distinct and in order.
     let channels = OUTPUT_PAIRS * 2;
     let positions = std::iter::once("FL".to_owned())
         .chain(std::iter::once("FR".to_owned()))
@@ -371,8 +342,6 @@ mod tests {
 
     #[test]
     fn nothing_else_is_mistaken_for_a_chain() {
-        // The meter streams in particular: they are ours, and routing one
-        // would put a capture stream where a strip should be.
         assert!(!super::is_chain_node("pipemeter_meter"));
         assert!(!super::is_chain_node("pipemeter_vaio"));
         assert!(!super::is_chain_node("alsa_output.something"));
@@ -387,7 +356,6 @@ mod tests {
     fn the_knob_ends_are_the_full_range() {
         assert!((gain_db(1.0) - 12.0).abs() < 1e-5);
         assert!((gain_db(0.0) + 12.0).abs() < 1e-5);
-        // Beyond the ends is clamped rather than extrapolated.
         assert!((gain_db(4.0) - 12.0).abs() < 1e-5);
     }
 
@@ -405,9 +373,6 @@ mod tests {
 
     #[test]
     fn a_chain_declares_exactly_one_output() {
-        // The bug this replaced: three graph outputs against a six-channel
-        // playback side left the strip's own signal off the front pair, and
-        // every chain passed silence with its input plainly carrying audio.
         for kind in [Kind::Equaliser, Kind::Dynamics] {
             let text = config("x", kind);
             let outputs = text
@@ -432,7 +397,6 @@ mod tests {
     #[test]
     fn a_gate_knob_at_rest_sits_below_anything_audible() {
         assert!(gate_open_db(0.0) <= -60.0);
-        // And opens up as it is turned, without ever gating everything.
         assert!(gate_open_db(1.0) < 0.0);
         assert!(gate_open_db(1.0) > gate_open_db(0.0));
     }
@@ -451,7 +415,6 @@ mod tests {
         assert!(text.contains("output = \"gate:out\" input = \"comp:in\""));
         assert!(text.contains("inputs  = [ \"gate:in\" ]"));
         assert!(text.contains("outputs = [ \"comp:out\" ]"), "{text}");
-        // The two halves must not share a graph.
         assert!(!text.contains("bq_lowshelf"));
     }
 
@@ -459,7 +422,6 @@ mod tests {
     fn the_bands_are_wired_in_series_from_input_to_output() {
         let text = config("x", Kind::Equaliser);
         assert!(text.contains("inputs  = [ \"bass:In\" ]"));
-        // The strip's own output first, then its two sends.
         assert!(text.contains("outputs = [ \"treble:Out\" ]"), "{text}");
         assert!(text.contains("output = \"bass:Out\" input = \"mid:In\""));
     }

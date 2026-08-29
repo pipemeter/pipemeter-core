@@ -75,12 +75,10 @@ impl Writer {
         let data = u32::try_from(self.frames * u64::from(self.channels) * 2).unwrap_or(u32::MAX);
         let end = SeekFrom::Start(u64::from(HEADER_LEN) + u64::from(data));
         self.file.seek(SeekFrom::Start(RIFF_SIZE_AT))?;
-        // The RIFF length counts everything after this field itself.
         self.file
             .write_all(&(data + HEADER_LEN - 8).to_le_bytes())?;
         self.file.seek(SeekFrom::Start(DATA_SIZE_AT))?;
         self.file.write_all(&data.to_le_bytes())?;
-        // Back to where the samples go, or the next write lands in the header.
         self.file.seek(end)?;
         Ok(())
     }
@@ -117,10 +115,8 @@ impl Writer {
 fn write_header(file: &mut File, rate: u32, channels: u16) -> io::Result<()> {
     let bytes_per_frame = u32::from(channels) * 2;
     file.write_all(b"RIFF")?;
-    // Patched by `finish`; zero until then.
     file.write_all(&0u32.to_le_bytes())?;
     file.write_all(b"WAVEfmt ")?;
-    // Length of this chunk, then PCM, then the layout.
     file.write_all(&16u32.to_le_bytes())?;
     file.write_all(&1u16.to_le_bytes())?;
     file.write_all(&channels.to_le_bytes())?;
@@ -138,8 +134,6 @@ fn write_header(file: &mut File, rate: u32, channels: u16) -> io::Result<()> {
 /// and wrapping would turn a loud passage into noise.
 fn to_i16(sample: f32) -> i16 {
     let clamped = sample.clamp(-1.0, 1.0);
-    // 32767 rather than 32768 so +1.0 and -1.0 are equally far from the
-    // ends and neither overflows.
     (clamped * 32767.0) as i16
 }
 
@@ -156,8 +150,6 @@ mod tests {
 
     #[test]
     fn anything_past_full_scale_clips() {
-        // A strip boosting above unity really does produce these, and
-        // wrapping would turn the loudest moment into noise.
         assert_eq!(to_i16(2.5), 32767);
         assert_eq!(to_i16(-9.0), -32767);
     }
@@ -166,7 +158,6 @@ mod tests {
     fn a_finished_file_declares_its_own_length() {
         let path = std::env::temp_dir().join("pipemeter-wav-test.wav");
         let mut writer = Writer::create(&path, 48_000, 2).expect("creates");
-        // Four stereo frames.
         writer
             .write(&[0.0, 0.0, 1.0, -1.0, 0.5, 0.5, 0.0, 0.0])
             .expect("writes");
@@ -178,7 +169,6 @@ mod tests {
         assert_eq!(&bytes[8..12], b"WAVE");
 
         let data_len = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
-        // Four frames, two channels, two bytes each.
         assert_eq!(data_len, 16);
         assert_eq!(bytes.len() as u32, HEADER_LEN + data_len);
 
@@ -190,12 +180,9 @@ mod tests {
 
     #[test]
     fn an_unfinished_file_still_declares_what_it_holds() {
-        // The case that matters: the process is killed mid-take, so `finish`
-        // never runs. Everything on disk must still be described.
         let path = std::env::temp_dir().join("pipemeter-wav-abandoned.wav");
         let mut writer = Writer::create(&path, 48_000, 2).expect("creates");
         writer.write(&[0.25; 64]).expect("writes");
-        // Deliberately no `finish`.
         drop(writer);
 
         let bytes = std::fs::read(&path).expect("reads back");
@@ -207,8 +194,6 @@ mod tests {
 
     #[test]
     fn writing_after_a_patch_does_not_land_in_the_header() {
-        // Patching seeks backwards; forgetting to seek forward again would
-        // overwrite the header with audio.
         let path = std::env::temp_dir().join("pipemeter-wav-seek.wav");
         let mut writer = Writer::create(&path, 48_000, 2).expect("creates");
         writer.write(&[0.5; 4]).expect("first");
@@ -226,7 +211,6 @@ mod tests {
     fn the_duration_follows_the_frames_written() {
         let path = std::env::temp_dir().join("pipemeter-wav-duration.wav");
         let mut writer = Writer::create(&path, 8, 2).expect("creates");
-        // Sixteen stereo frames at 8 Hz is two seconds.
         writer.write(&[0.0; 32]).expect("writes");
         assert_eq!(writer.duration().as_secs(), 2);
         writer.finish().expect("finishes");

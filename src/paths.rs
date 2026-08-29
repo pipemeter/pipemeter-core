@@ -12,8 +12,6 @@ pub fn documents_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_DOCUMENTS_DIR") {
         return Some(PathBuf::from(dir));
     }
-    // user-dirs.dirs is shell syntax; the one line we want is simple enough
-    // to read directly rather than pulling in a parser for it.
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let config = home.join(".config").join("user-dirs.dirs");
     if let Ok(text) = std::fs::read_to_string(config) {

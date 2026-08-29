@@ -46,8 +46,6 @@ impl Registry {
     pub fn remember(&mut self, name: &str, description: &str, direction: Direction) -> bool {
         if let Some(known) = self.seen.get_mut(name) {
             known.present = true;
-            // A description can improve once a device is fully set up, and
-            // the better one is the one worth keeping.
             if description.is_empty() || known.description == description {
                 return false;
             }
@@ -177,8 +175,6 @@ fn render(registry: &Registry) -> String {
 
     let mut out = String::from("# direction\tnode name\tdescription\n");
     for known in registry.seen.values() {
-        // A tab or a newline in a device name would split the line in two.
-        // Neither has ever been seen, but a name comes from the outside.
         let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
         let _ = writeln!(
             out,
@@ -209,7 +205,6 @@ fn parse(text: &str) -> Registry {
         let direction = match direction {
             "out" => Direction::Sink,
             "in" => Direction::Source,
-            // A line we do not understand is skipped rather than guessed at.
             _ => continue,
         };
         registry.seen.insert(
@@ -239,8 +234,6 @@ mod tests {
 
     #[test]
     fn a_device_survives_being_unplugged() {
-        // The whole point: the assignment outlives the device, so the name
-        // has to as well.
         let mut registry = populated();
         registry.mark_all_absent();
         assert!(!registry.is_present("bluez.headset"));
@@ -301,7 +294,6 @@ mod tests {
             Some("Headset Microphone")
         );
         assert_eq!(after.of(Direction::Source).len(), 1);
-        // Nothing read from a file is present until the graph says so.
         assert!(!after.is_present("alsa_input.mic"));
     }
 

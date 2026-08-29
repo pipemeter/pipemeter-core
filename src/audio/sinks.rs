@@ -174,21 +174,10 @@ fn create(core: &CoreRc, spec: &Spec) -> Option<Node> {
         "node.name" => spec.name,
         "node.description" => spec.description,
         "media.class" => spec.class,
-        // Outlive the process: see the note at the top of this module.
         "object.linger" => "1",
-        // Stereo, and always present even with nothing connected, so the
-        // strip does not vanish when the last app closes.
         "audio.position" => "FL,FR",
         "node.always-process" => "true",
-        // The monitor is the whole point of the B buses: it is what other
-        // applications record from.
         "monitor.channel-volumes" => "true",
-        // Never win the default. Creating eight virtual recording devices
-        // otherwise lets one of them become the system microphone, and every
-        // application that follows the default starts recording a bus
-        // instead of the user's actual microphone.
-        //
-        // They stay perfectly selectable; they just do not volunteer.
         "priority.session" => "100",
         "priority.driver" => "100"
     };

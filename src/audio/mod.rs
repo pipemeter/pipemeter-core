@@ -17,8 +17,6 @@ pub mod wav;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 pub use links::End;
-// Re-exported for the FX sends, which route a specific pair rather than a
-// node's main output. Nothing calls it yet; see the FX section of TODO.md.
 pub use links::{Route, Tap};
 pub use nodes::{Command, Device, Direction, LinkInfo, Stream};
 
@@ -30,7 +28,6 @@ fn amplitude_of(gain_db: f32, muted: bool) -> f32 {
     if muted {
         return 0.0;
     }
-    // 10^(dB/20) is the standard amplitude conversion; unity lands on 1.0.
     10.0_f32.powf(gain_db / 20.0)
 }
 
@@ -61,8 +58,6 @@ mod pan_tests {
 
     #[test]
     fn pan_holds_the_near_channel_at_unity() {
-        // Not a constant-power law: hard left is unity on the left and
-        // silence on the right, which is what the original does.
         assert_eq!(pan_gains(-1.0), (1.0, 0.0));
         assert_eq!(pan_gains(1.0), (0.0, 1.0));
     }
@@ -137,8 +132,6 @@ pub struct Backend {
     error: Option<String>,
 }
 
-// Hand-written because the command sender has no Debug of its own, and the
-// device list is more useful as a count than in full.
 impl std::fmt::Debug for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Backend")
@@ -209,7 +202,6 @@ impl Backend {
         loop {
             match self.rx.try_recv() {
                 Ok(Event::Added(dev)) => {
-                    // Re-announcements replace rather than duplicate.
                     if let Some(slot) = self.devices.iter_mut().find(|d| d.id == dev.id) {
                         *slot = dev;
                     } else {
@@ -238,8 +230,6 @@ impl Backend {
                     }
                 }
                 Ok(Event::Format { id, rate, channels }) => {
-                    // Filled in rather than replacing the device: the
-                    // registry told us everything else about it already.
                     if let Some(device) = self.devices.iter_mut().find(|d| d.id == id) {
                         if rate.is_some() {
                             device.rate = rate;
@@ -250,7 +240,6 @@ impl Backend {
                     }
                 }
                 Ok(Event::Removed(id)) => {
-                    // The id could be any of the three; only one will match.
                     if let Some(gone) = self.devices.iter().find(|d| d.id == id) {
                         log::info!("device went away: {} ({})", gone.description, gone.name);
                     }
@@ -398,8 +387,6 @@ impl Backend {
                     .any(|l| l.output_node == stream.id && l.input_node == sink)
             })
             .collect();
-        // A stereo stream has a link per channel, so the same application
-        // matches more than once.
         found.dedup_by(|a, b| a.id == b.id);
         found
     }
@@ -442,10 +429,6 @@ impl Backend {
     /// `pan` is -1.0 hard left to +1.0 hard right, 0.0 centred.
     pub fn set_gain(&self, node_name: &str, gain_db: f32, muted: bool, pan: f32) -> bool {
         let Some(node) = self.id_of(node_name) else {
-            // Trace, not debug. A strip assigned to something unplugged
-            // fails this every frame, for as long as it stays unplugged,
-            // and it is not news - the mixer draws that strip in red and
-            // will pick the device up by itself when it returns.
             log::trace!("set_gain: no node named {node_name}");
             return false;
         };
@@ -505,8 +488,6 @@ impl Backend {
     pub fn record(&self, takes: &[(String, std::path::PathBuf)], rate: u32) -> bool {
         let mut resolved = Vec::with_capacity(takes.len());
         for (name, path) in takes {
-            // Asked to record something that is not there: say so rather
-            // than silently starting the rest and calling it a take.
             let Some(id) = self.id_of(name) else {
                 log::warn!("cannot record {name}: it is not in the graph");
                 return false;

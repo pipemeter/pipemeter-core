@@ -151,8 +151,6 @@ impl Router {
             .collect();
 
         for key in stale {
-            // Drop the old links first: rebuilding on top of them would
-            // duplicate the channels that were already joined.
             self.routes.remove(&key);
             let links = self.connect(core, key);
             if !links.is_empty() {
@@ -186,7 +184,6 @@ impl Router {
                 "link.output.port" => out.id.to_string(),
                 "link.input.node" => input.node_id.to_string(),
                 "link.input.port" => input.id.to_string(),
-                // Ours to clean up, so no lingering.
                 "object.linger" => "0"
             },
         ) {
@@ -205,8 +202,6 @@ impl Router {
     /// by channel within it.
     fn pair_of(&self, node: u32, direction: PortDirection, pair: u32) -> Vec<&Port> {
         let ports = self.ports_of(node, direction);
-        // A node with a single pair is the ordinary case and its ports may
-        // be numbered from anywhere, so pair zero means "all of them".
         if pair == 0 && ports.len() <= 2 {
             return ports;
         }
@@ -253,8 +248,6 @@ impl Router {
             .copied()
             .collect();
         for key in affected {
-            // Dropping first destroys the old links; rebuilding on top of
-            // them would leave both wirings in place at once.
             self.routes.remove(&key);
             let links = self.connect(core, key);
             if !links.is_empty() {
@@ -271,9 +264,6 @@ impl Router {
     /// stale `Link` proxies linger until the route is toggled again.
     pub fn forget_node(&mut self, node_id: u32) {
         let before = self.routes.len();
-        // The wish goes with the links. Left behind, it makes `retry_pending`
-        // rebuild a route to a node that no longer exists, every second, for
-        // as long as the mixer runs.
         self.desired
             .retain(|route| route.source != node_id && route.target != node_id);
         self.routes
@@ -292,7 +282,6 @@ impl Router {
         let key = route;
         if !enabled {
             self.desired.remove(&key);
-            // Dropping the proxies destroys the links.
             self.routes.remove(&key);
             return;
         }
@@ -303,9 +292,6 @@ impl Router {
 
         let links = self.connect(core, route);
         if links.is_empty() {
-            // Ports may not exist yet; leaving the route unrecorded means the
-            // next attempt retries rather than believing it succeeded.
-            // Not an error: the ports usually just have not appeared yet.
             log::debug!(
                 "route {} -> {} deferred until its ports appear",
                 route.source,
@@ -327,10 +313,6 @@ impl Router {
         let outs = self.pair_of(route.source, PortDirection::Out, route.tap.source_pair);
         let ins = self.pair_of(route.target, PortDirection::In, route.tap.target_pair);
 
-        // A tapped route joins its two pairs in order rather than by name.
-        // The send pairs a chain carries are not called FL and FR - there is
-        // only one pair of those - so there is nothing to match on, and
-        // position is the whole meaning of a pair anyway.
         if route.tap != Tap::default() {
             return outs
                 .iter()
@@ -352,7 +334,6 @@ impl Router {
                         "link.output.port" => out.id.to_string(),
                         "link.input.node" => input.node_id.to_string(),
                         "link.input.port" => input.id.to_string(),
-                        // Ours to clean up, so no lingering.
                         "object.linger" => "0"
                     },
                 ) {
@@ -370,7 +351,6 @@ impl Router {
             .values()
             .filter(|p| p.node_id == node_id && p.direction == direction && !p.channel.is_empty())
             .collect();
-        // Stable order so FL pairs with FL regardless of discovery order.
         ports.sort_by(|a, b| a.channel.cmp(&b.channel));
         ports
     }
@@ -396,8 +376,6 @@ mod tests {
 
     #[test]
     fn a_single_pair_is_taken_whatever_it_is_numbered() {
-        // The ordinary case: one output pair, and its slots may start
-        // anywhere the server chose.
         let mut r = Router::default();
         r.add_port(at(1, 10, PortDirection::Out, "FL", 7));
         r.add_port(at(2, 10, PortDirection::Out, "FR", 8));
@@ -406,8 +384,6 @@ mod tests {
 
     #[test]
     fn a_send_is_told_from_the_main_output_by_its_pair() {
-        // A chain carrying two sends: three pairs, and the channel names
-        // repeat across all of them.
         let mut r = Router::default();
         for pair in 0..3u32 {
             r.add_port(at(pair * 2 + 1, 10, PortDirection::Out, "FL", pair * 2));
@@ -418,7 +394,6 @@ mod tests {
         let second = r.pair_of(10, PortDirection::Out, 1);
         assert_eq!(main.len(), 2);
         assert_eq!(second.len(), 2);
-        // Different ports, despite carrying the same channel names.
         assert_ne!(main[0].id, second[0].id);
         assert_eq!(main[0].channel, second[0].channel);
     }
