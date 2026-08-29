@@ -172,6 +172,21 @@ pub fn gate_open_db(knob: f32) -> f32 {
     GATE_OPEN_MIN + knob.clamp(0.0, 1.0) * (GATE_OPEN_MAX - GATE_OPEN_MIN)
 }
 
+/// Where the Gate knob sits for a threshold in dB - the inverse of
+/// [`gate_open_db`].
+///
+/// The knob and the dialog's THRESHOLD are two views of one value, so
+/// moving either has to move the other. Without this the dialog could
+/// show -30 dB while the knob it shares a strip with sat at the bottom.
+#[must_use]
+pub fn gate_knob_from_db(db: f32) -> f32 {
+    ((db - GATE_OPEN_MIN) / (GATE_OPEN_MAX - GATE_OPEN_MIN)).clamp(0.0, 1.0)
+}
+
+/// The gate's attack, as filter-chain addresses it. The plugin takes
+/// milliseconds, like the settings file, but only up to five.
+pub const GATE_ATTACK: &str = "gate:attack (ms)";
+
 /// The Comp knob is the compressor's strength directly, both being 0..1.
 #[must_use]
 pub fn comp_strength(knob: f32) -> f32 {
@@ -659,5 +674,15 @@ mod tests {
     fn a_high_threshold_never_acts() {
         assert!(super::comp_threshold(0.0) >= 0.9);
         assert!(super::comp_threshold(12.0) <= 1.0);
+    }
+
+    /// The knob and the dialog have to agree, or moving one leaves the
+    /// other showing something that is no longer true.
+    #[test]
+    fn the_gate_knob_and_its_decibels_round_trip() {
+        for knob in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let back = super::gate_knob_from_db(super::gate_open_db(knob));
+            assert!((back - knob).abs() < 1e-5, "{knob} came back as {back}");
+        }
     }
 }
