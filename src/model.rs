@@ -126,7 +126,47 @@ pub struct Bus {
     pub gain_db: f32,
     /// FX return knobs, reverb and delay.
     pub fx_return: [f32; 2],
+    /// The six cells of the master EQ.
+    ///
+    /// Always present, whether or not the EQ is switched on: the toggle in
+    /// `toggles` is what silences it, and a cell keeps its setting across
+    /// being switched off and on again the way an effect keeps its
+    /// character.
+    pub eq_cells: [EqCell; crate::audio::eq::BUS_BANDS],
     pub levels: (f32, f32),
+}
+
+/// One cell of a bus's parametric EQ.
+///
+/// The defaults are the original's, read off a real settings file rather
+/// than chosen; `audio::eq::BUS_FREQUENCIES` is where they live and why.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EqCell {
+    pub freq: f32,
+    pub q: f32,
+    pub gain_db: f32,
+    pub on: bool,
+}
+
+impl Default for EqCell {
+    fn default() -> Self {
+        Self {
+            freq: crate::audio::eq::BUS_FREQUENCIES[0],
+            q: crate::audio::eq::BUS_Q,
+            gain_db: 0.0,
+            on: true,
+        }
+    }
+}
+
+/// The six cells a bus starts with, spread across the reference centres.
+#[must_use]
+pub fn default_eq_cells() -> [EqCell; crate::audio::eq::BUS_BANDS] {
+    let mut cells = [EqCell::default(); crate::audio::eq::BUS_BANDS];
+    for (cell, freq) in cells.iter_mut().zip(crate::audio::eq::BUS_FREQUENCIES) {
+        cell.freq = freq;
+    }
+    cells
 }
 
 impl Bus {
@@ -167,6 +207,7 @@ impl Bus {
             toggles: [false; 4],
             gain_db: 0.0,
             fx_return: [0.0; 2],
+            eq_cells: default_eq_cells(),
             levels: (0.0, 0.0),
         }
     }

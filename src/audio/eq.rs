@@ -534,7 +534,10 @@ mod tests {
     #[test]
     #[ignore = "writes a config for the probe script rather than asserting"]
     fn dump_bus_eq_for_probe() {
-        std::fs::write("/tmp/bus_eq.conf", config("probe_buseq", Kind::BusEqualiser))
-            .expect("writes");
+        std::fs::write(
+            "/tmp/bus_eq.conf",
+            config("probe_buseq", Kind::BusEqualiser),
+        )
+        .expect("writes");
     }
 }
