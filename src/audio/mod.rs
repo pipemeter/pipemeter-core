@@ -367,7 +367,12 @@ impl Backend {
     /// ports have not appeared is deferred inside the router. Code that
     /// treats "I asked" as "it happened" reports success and leaves a chain
     /// wired to nothing, which is exactly what the effect chains did.
+    /// How many links arrive at a node.
     #[must_use]
+    pub fn links_into(&self, node: u32) -> usize {
+        self.links.iter().filter(|l| l.input_node == node).count()
+    }
+
     pub fn links_from(&self, node: u32) -> usize {
         self.links.iter().filter(|l| l.output_node == node).count()
     }
