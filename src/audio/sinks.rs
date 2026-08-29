@@ -211,6 +211,14 @@ pub fn is_ours(name: &str) -> bool {
     all_specs().any(|s| s.name == name)
 }
 
+/// The sink applications should play into when the mixer is holding the
+/// system defaults: the first virtual input, which is what Voicemeeter's
+/// VAIO is for.
+pub const DEFAULT_SINK: &str = "pipemeter_vaio";
+
+/// And the source they should record from: B1, the first virtual bus.
+pub const DEFAULT_SOURCE: &str = "pipemeter_b1";
+
 #[cfg(test)]
 mod tests {
     use super::{all_specs, is_ours};

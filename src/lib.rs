@@ -14,6 +14,7 @@
 #![allow(clippy::must_use_candidate)]
 
 pub mod audio;
+pub mod defaults;
 pub mod devices;
 pub mod instance;
 pub mod model;
