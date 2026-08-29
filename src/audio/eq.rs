@@ -326,7 +326,9 @@ fn equaliser_graph() -> (String, String, &'static str, &'static str) {
     let links = "          { output = \"bass:Out\" input = \"mid:In\" }\n\
                  \x20         { output = \"mid:Out\"  input = \"treble:In\" }"
         .to_owned();
-    (nodes, links, "bass:In", "treble:Out")
+    let nodes = format!("{nodes}\n{}", limiter_node());
+    let links = format!("{links}\n{}", link_into_limiter("treble:Out"));
+    (nodes, links, "bass:In", "lim:out")
 }
 
 /// Six peaking biquads in series.
@@ -372,7 +374,22 @@ control = {{ \"open (dB)\" = {GATE_OPEN_MIN} \"attack (ms)\" = 0.0 \"close (dB)\
 control = {{ \"strength\" = 0.0 \"threshold\" = 0.5 \"attack\" = 0.75 \"release\" = 0.5 \"gain (dB)\" = 0.0 }} }}"
     );
     let links = "          { output = \"gate:out\" input = \"comp:in\" }".to_owned();
-    (nodes, links, "gate:in", "comp:out")
+    let nodes = format!("{nodes}\n{}", limiter_node());
+    let links = format!("{links}\n{}", link_into_limiter("comp:out"));
+    (nodes, links, "gate:in", "lim:out")
+}
+
+/// The limiter that ends every strip graph, resting wide open.
+fn limiter_node() -> String {
+    let open = limit_threshold(crate::model::LIMIT_OFF);
+    format!(
+        "          {{ type = ladspa name = {LIMIT_NODE} plugin = caps label = Compress control = {{ \"mode\" = 0 \"strength\" = 1.0 \"threshold\" = {open} \"attack\" = 0.1 \"release\" = 0.3 \"gain (dB)\" = 0.0 }} }}"
+    )
+}
+
+/// Attach the last stage of a graph to the limiter.
+fn link_into_limiter(from: &str) -> String {
+    format!("          {{ output = \"{from}\" input = \"{LIMIT_NODE}:in\" }}")
 }
 
 /// The boilerplate every chain shares.
@@ -524,7 +541,7 @@ mod tests {
         assert!(text.contains("label = Compress"));
         assert!(text.contains("output = \"gate:out\" input = \"comp:in\""));
         assert!(text.contains("inputs  = [ \"gate:in\" ]"));
-        assert!(text.contains("outputs = [ \"comp:out\" ]"), "{text}");
+        assert!(text.contains("outputs = [ \"lim:out\" ]"), "{text}");
         assert!(!text.contains("bq_lowshelf"));
     }
 
@@ -532,7 +549,7 @@ mod tests {
     fn the_bands_are_wired_in_series_from_input_to_output() {
         let text = config("x", Kind::Equaliser);
         assert!(text.contains("inputs  = [ \"bass:In\" ]"));
-        assert!(text.contains("outputs = [ \"treble:Out\" ]"), "{text}");
+        assert!(text.contains("outputs = [ \"lim:out\" ]"), "{text}");
         assert!(text.contains("output = \"bass:Out\" input = \"mid:In\""));
     }
 
