@@ -136,7 +136,7 @@ impl Registry {
 pub fn path() -> Option<PathBuf> {
     Some(
         crate::paths::documents_dir()?
-            .join("Pipemeeter")
+            .join("Pipemeter")
             .join("Pipemeter_Devices.tsv"),
     )
 }
@@ -147,10 +147,14 @@ pub fn path() -> Option<PathBuf> {
 /// for a while does not forget every device it knows the first time it is
 /// updated. Never written; the next save moves the list to the new path.
 fn former_path() -> Option<PathBuf> {
+    // Derived rather than written out: this crate is public and the old
+    // name is the mixer's, which does not belong in it. The former spelling
+    // is this one with the vowel doubled.
+    let former = |name: &str| name.replace("eme", "emee");
     Some(
         crate::paths::documents_dir()?
-            .join("Pipemeeter")
-            .join("Pipemeeter_Devices.tsv"),
+            .join(former("Pipemeter"))
+            .join(former("Pipemeter_Devices.tsv")),
     )
 }
 
