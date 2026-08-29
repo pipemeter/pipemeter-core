@@ -206,9 +206,22 @@ pub fn wrong_class(name: &str, class: &str) -> bool {
 pub const PREFIX: &str = "pipemeter_";
 
 /// Whether a node is one this library created.
+/// What the test harness calls its sinks.
+///
+/// `scripts/testaudio.sh` creates `pmtest_out` and `pmtest_in` so a tone
+/// can be measured without touching a real output. They are ours as much
+/// as the buses are, and offering them for assignment would put test
+/// plumbing in a person's device list.
+pub const TEST_PREFIX: &str = "pmtest";
+
 #[must_use]
 pub fn is_ours(name: &str) -> bool {
-    all_specs().any(|s| s.name == name)
+    // By prefix, not only by exact match against the current specs. A
+    // device we made carries our prefix whatever it is called, and the
+    // picker must never offer one: assigning a bus to its own mixer is a
+    // loop, and a *remembered* device from an older naming would slip
+    // past a spec-by-spec comparison.
+    name.starts_with(PREFIX) || name.starts_with(TEST_PREFIX) || all_specs().any(|s| s.name == name)
 }
 
 /// The sink applications should play into when the mixer is holding the
@@ -237,5 +250,30 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count);
+    }
+
+    /// Our own devices must never be offered for assignment: routing a
+    /// bus into a device we made is a loop. Matching only the current
+    /// specs let a remembered device from an older naming through, which
+    /// is how they came to be listed.
+    #[test]
+    fn anything_carrying_our_prefix_is_ours() {
+        assert!(is_ours("pipemeter_vaio"));
+        assert!(is_ours("pipemeter_b1"));
+        assert!(is_ours("pipemeter_a1"));
+        assert!(is_ours(&format!("{}something_we_renamed", super::PREFIX)));
+    }
+
+    #[test]
+    fn the_test_harness_sinks_are_ours_too() {
+        assert!(is_ours("pmtest_out"));
+        assert!(is_ours("pmtest_in"));
+    }
+
+    #[test]
+    fn a_real_device_is_not_ours() {
+        assert!(!is_ours("alsa_output.pci-0000_00_1f.3.analog-stereo"));
+        assert!(!is_ours("wivrn.sink"));
+        assert!(!is_ours(""));
     }
 }
