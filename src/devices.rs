@@ -10,12 +10,14 @@
 //! device comes back. The picker offers the absent ones too, greyed, because
 //! you should be able to set up a headset's routing while it is charging.
 //!
-//! The file is one line per device rather than XML like everything else here.
-//! It is a list of three strings with no structure to speak of, and the
-//! parser, the writer and their tests would be more code than the feature.
+//! The list is not stored here. It goes in the settings file with
+//! everything else, under `PipemeterSeenDevices`, because a device history
+//! that can drift out of step with the assignments referring to it is
+//! worse than no history - and because one settings file is enough. This
+//! module keeps the list in memory and leaves the writing to whoever owns
+//! that file.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use crate::audio::Direction;
 
@@ -139,81 +141,13 @@ impl Registry {
     }
 }
 
-/// Where the list lives.
-#[must_use]
-pub fn path() -> Option<PathBuf> {
-    Some(crate::paths::config_dir()?.join("Devices.tsv"))
-}
-
-/// Read the remembered list. Everything read starts out absent: only the
-/// graph can say otherwise.
-#[must_use]
-pub fn load() -> Registry {
-    let Some(path) = path() else {
-        return Registry::default();
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Registry::default();
-    };
-    let registry = parse(&text);
-    log::info!(
-        "remembered {} device(s) from {}",
-        registry.len(),
-        path.display()
-    );
-    registry
-}
-
-/// Write the remembered list out.
-pub fn save(registry: &Registry) {
-    let Some(path) = path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(err) = std::fs::write(&path, render(registry)) {
-        log::warn!("could not write {}: {err}", path.display());
-    }
-}
-
-/// One line per device: direction, node name, description.
-fn render(registry: &Registry) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::from("# direction\tnode name\tdescription\n");
-    for known in registry.seen.values() {
-        let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
-        let _ = writeln!(
-            out,
-            "{}\t{}\t{}",
-            match known.direction {
-                Direction::Sink => "out",
-                Direction::Source => "in",
-            },
-            clean(&known.name),
-            clean(&known.description),
-        );
-    }
-    out
-}
-
-/// The other half of [`render`].
-fn parse(text: &str) -> Registry {
-    let mut registry = Registry::default();
-    for line in text.lines() {
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-        let mut fields = line.split('\t');
-        let (Some(direction), Some(name)) = (fields.next(), fields.next()) else {
-            continue;
-        };
-        let description = fields.next().unwrap_or(name);
-        let direction = match direction {
-            "out" => Direction::Sink,
-            "in" => Direction::Source,
-            _ => continue,
-        };
-        registry.seen.insert(
+/// Note a device that is remembered but not in the graph.
+///
+/// What loading the settings file does. Everything read starts out absent:
+/// only the graph can say otherwise.
+impl Registry {
+    pub fn remember_absent(&mut self, name: &str, description: &str, direction: Direction) {
+        self.seen.insert(
             name.to_owned(),
             Known {
                 name: name.to_owned(),
@@ -223,12 +157,16 @@ fn parse(text: &str) -> Registry {
             },
         );
     }
-    registry
+
+    /// Everything remembered, in stored order, for writing back out.
+    pub fn all(&self) -> impl Iterator<Item = &Known> {
+        self.seen.values()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, Registry, parse, render};
+    use super::{Direction, Registry};
 
     fn populated() -> Registry {
         let mut registry = Registry::default();
@@ -290,32 +228,23 @@ mod tests {
         assert!(!registry.remember("x", "X", Direction::Sink));
     }
 
+    /// What loading the settings file does: names without presence.
     #[test]
-    fn the_file_round_trips() {
-        let before = populated();
-        let after = parse(&render(&before));
-        assert_eq!(after.len(), before.len());
+    fn a_remembered_device_starts_out_absent() {
+        let mut registry = Registry::default();
+        registry.remember_absent("alsa_input.mic", "Headset Microphone", Direction::Source);
         assert_eq!(
-            after.description_of("alsa_input.mic"),
+            registry.description_of("alsa_input.mic"),
             Some("Headset Microphone")
         );
-        assert_eq!(after.of(Direction::Source).len(), 1);
-        assert!(!after.is_present("alsa_input.mic"));
+        assert!(!registry.is_present("alsa_input.mic"));
+        assert_eq!(registry.of(Direction::Source).len(), 1);
     }
 
     #[test]
-    fn a_tab_in_a_name_cannot_split_the_line() {
-        let mut registry = Registry::default();
-        registry.remember("odd\tname", "Odd\tDescription", Direction::Sink);
-        let after = parse(&render(&registry));
-        assert_eq!(after.len(), 1, "the line was split by its own contents");
-    }
-
-    #[test]
-    fn rubbish_lines_are_skipped_not_guessed_at() {
-        let after = parse("# a comment\n\nsideways\tthing\tThing\nout\tgood\tGood\n");
-        assert_eq!(after.len(), 1);
-        assert_eq!(after.description_of("good"), Some("Good"));
+    fn everything_remembered_can_be_listed_for_writing() {
+        let registry = populated();
+        assert_eq!(registry.all().count(), 3);
     }
 
     #[test]
