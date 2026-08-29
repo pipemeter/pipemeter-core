@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn a_finished_file_declares_its_own_length() {
-        let path = std::env::temp_dir().join("pipemeeter-wav-test.wav");
+        let path = std::env::temp_dir().join("pipemeter-wav-test.wav");
         let mut writer = Writer::create(&path, 48_000, 2).expect("creates");
         // Four stereo frames.
         writer
@@ -193,7 +193,7 @@ mod tests {
     fn an_unfinished_file_still_declares_what_it_holds() {
         // The case that matters: the process is killed mid-take, so `finish`
         // never runs. Everything on disk must still be described.
-        let path = std::env::temp_dir().join("pipemeeter-wav-abandoned.wav");
+        let path = std::env::temp_dir().join("pipemeter-wav-abandoned.wav");
         let mut writer = Writer::create(&path, 48_000, 2).expect("creates");
         writer.write(&[0.25; 64]).expect("writes");
         // Deliberately no `finish`.
@@ -210,7 +210,7 @@ mod tests {
     fn writing_after_a_patch_does_not_land_in_the_header() {
         // Patching seeks backwards; forgetting to seek forward again would
         // overwrite the header with audio.
-        let path = std::env::temp_dir().join("pipemeeter-wav-seek.wav");
+        let path = std::env::temp_dir().join("pipemeter-wav-seek.wav");
         let mut writer = Writer::create(&path, 48_000, 2).expect("creates");
         writer.write(&[0.5; 4]).expect("first");
         writer.write(&[0.5; 4]).expect("second");
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn the_duration_follows_the_frames_written() {
-        let path = std::env::temp_dir().join("pipemeeter-wav-duration.wav");
+        let path = std::env::temp_dir().join("pipemeter-wav-duration.wav");
         let mut writer = Writer::create(&path, 8, 2).expect("creates");
         // Sixteen stereo frames at 8 Hz is two seconds.
         writer.write(&[0.0; 32]).expect("writes");

@@ -851,7 +851,7 @@ fn describe_stream(global: &pipewire::registry::GlobalObject<&DictRef>) -> Optio
     // not one feeding a strip.
     if props
         .get("node.name")
-        .is_some_and(|n| n.contains("pipemeeter"))
+        .is_some_and(|n| n.contains("pipemeter"))
     {
         return None;
     }

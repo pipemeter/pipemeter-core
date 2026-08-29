@@ -34,7 +34,7 @@ use pipewire::node::Node;
 /// A virtual sink to create at startup.
 #[derive(Debug)]
 pub struct Spec {
-    /// `PipeWire` node name, e.g. `pipemeeter_main`.
+    /// `PipeWire` node name, e.g. `pipemeter_main`.
     pub name: &'static str,
     /// Human-readable name shown by other applications.
     pub description: &'static str,
@@ -60,18 +60,18 @@ pub const CLASS_BUS: &str = "Audio/Sink";
 /// their output device, which is why the descriptions read like devices.
 pub const VIRTUAL_INPUTS: [Spec; 3] = [
     Spec {
-        name: "pipemeeter_vaio",
-        description: "PipeMeeter VAIO",
+        name: "pipemeter_vaio",
+        description: "PipeMeter VAIO",
         class: CLASS_INPUT,
     },
     Spec {
-        name: "pipemeeter_aux",
-        description: "PipeMeeter AUX",
+        name: "pipemeter_aux",
+        description: "PipeMeter AUX",
         class: CLASS_INPUT,
     },
     Spec {
-        name: "pipemeeter_vaio3",
-        description: "PipeMeeter VAIO 3",
+        name: "pipemeter_vaio3",
+        description: "PipeMeter VAIO 3",
         class: CLASS_INPUT,
     },
 ];
@@ -89,28 +89,28 @@ pub const VIRTUAL_INPUTS: [Spec; 3] = [
 /// may not be assigned at all.
 pub const HARDWARE_TAPS: [Spec; 5] = [
     Spec {
-        name: "pipemeeter_a1",
-        description: "PipeMeeter Out A1",
+        name: "pipemeter_a1",
+        description: "PipeMeter Out A1",
         class: CLASS_BUS,
     },
     Spec {
-        name: "pipemeeter_a2",
-        description: "PipeMeeter Out A2",
+        name: "pipemeter_a2",
+        description: "PipeMeter Out A2",
         class: CLASS_BUS,
     },
     Spec {
-        name: "pipemeeter_a3",
-        description: "PipeMeeter Out A3",
+        name: "pipemeter_a3",
+        description: "PipeMeter Out A3",
         class: CLASS_BUS,
     },
     Spec {
-        name: "pipemeeter_a4",
-        description: "PipeMeeter Out A4",
+        name: "pipemeter_a4",
+        description: "PipeMeter Out A4",
         class: CLASS_BUS,
     },
     Spec {
-        name: "pipemeeter_a5",
-        description: "PipeMeeter Out A5",
+        name: "pipemeter_a5",
+        description: "PipeMeter Out A5",
         class: CLASS_BUS,
     },
 ];
@@ -120,18 +120,18 @@ pub const HARDWARE_TAPS: [Spec; 5] = [
 /// to record the mix will look.
 pub const VIRTUAL_BUSES: [Spec; 3] = [
     Spec {
-        name: "pipemeeter_b1",
-        description: "PipeMeeter B1",
+        name: "pipemeter_b1",
+        description: "PipeMeter B1",
         class: CLASS_BUS,
     },
     Spec {
-        name: "pipemeeter_b2",
-        description: "PipeMeeter B2",
+        name: "pipemeter_b2",
+        description: "PipeMeter B2",
         class: CLASS_BUS,
     },
     Spec {
-        name: "pipemeeter_b3",
-        description: "PipeMeeter B3",
+        name: "pipemeter_b3",
+        description: "PipeMeter B3",
         class: CLASS_BUS,
     },
 ];
@@ -215,7 +215,11 @@ pub fn wrong_class(name: &str, class: &str) -> bool {
 /// device lists offered for hardware assignment — you should not be able to
 /// route a strip's output back into its own input.
 pub fn is_ours(name: &str) -> bool {
-    all_specs().any(|s| s.name == name)
+    // The former prefix counts too. Devices made by a build from before the
+    // library took its own name are still ours, and a run that did not
+    // recognise them would leave them in the graph for good: nothing else
+    // is ever going to clean them up.
+    all_specs().any(|s| s.name == name) || name.starts_with("pipemeeter_")
 }
 
 #[cfg(test)]
@@ -224,8 +228,8 @@ mod tests {
 
     #[test]
     fn recognises_own_sinks() {
-        assert!(is_ours("pipemeeter_vaio"));
-        assert!(is_ours("pipemeeter_b3"));
+        assert!(is_ours("pipemeter_vaio"));
+        assert!(is_ours("pipemeter_b3"));
         assert!(!is_ours("alsa_output.usb-something.analog-stereo"));
     }
 

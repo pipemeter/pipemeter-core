@@ -76,7 +76,7 @@ pub fn attach(core: &CoreRc, node: &Target, levels: &Levels) -> Option<Meter> {
         // moment the default device changes.
         *pipewire::keys::NODE_DONT_RECONNECT => "true",
         // Keep our own meters out of the strips' application lists.
-        *pipewire::keys::NODE_NAME => "pipemeeter_meter",
+        *pipewire::keys::NODE_NAME => "pipemeter_meter",
     };
     // Only a sink has a monitor to read. Asking for one on a source makes
     // the request meaningless, which is how it came to be ignored.
@@ -84,7 +84,7 @@ pub fn attach(core: &CoreRc, node: &Target, levels: &Levels) -> Option<Meter> {
         props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
     }
 
-    let stream = StreamRc::new(core.clone(), "pipemeeter-meter", props).ok()?;
+    let stream = StreamRc::new(core.clone(), "pipemeter-meter", props).ok()?;
     let data = UserData {
         format: spa::param::audio::AudioInfoRaw::default(),
         node_id: node.id,

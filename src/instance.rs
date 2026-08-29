@@ -51,7 +51,7 @@ pub fn claim() -> io::Result<Option<Guard>> {
 /// directory. Either way it is per-user, which is the scope that matters.
 fn lock_path() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    dir.join("pipemeeter").join("instance.lock")
+    dir.join("pipemeter").join("instance.lock")
 }
 
 #[cfg(test)]
@@ -62,7 +62,7 @@ mod tests {
     fn the_lock_lives_under_a_directory_of_our_own() {
         let path = lock_path();
         assert_eq!(path.file_name().unwrap(), "instance.lock");
-        assert_eq!(path.parent().unwrap().file_name().unwrap(), "pipemeeter");
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "pipemeter");
     }
 
     #[test]

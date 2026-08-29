@@ -131,12 +131,12 @@ impl Kind {
     #[must_use]
     pub fn node(self) -> &'static str {
         match self {
-            Self::Reverb => "pipemeeter_reverb",
-            Self::Delay => "pipemeeter_delay",
-            Self::External1 => "pipemeeter_extfx1",
-            Self::External2 => "pipemeeter_extfx2",
-            Self::Return1 => "pipemeeter_extret1",
-            Self::Return2 => "pipemeeter_extret2",
+            Self::Reverb => "pipemeter_reverb",
+            Self::Delay => "pipemeter_delay",
+            Self::External1 => "pipemeter_extfx1",
+            Self::External2 => "pipemeter_extfx2",
+            Self::Return1 => "pipemeter_extret1",
+            Self::Return2 => "pipemeter_extret2",
         }
     }
 
@@ -324,7 +324,7 @@ context.modules = [
   {{ name = libpipewire-module-filter-chain
     args = {{
       node.name = \"{name}\"
-      node.description = \"PipeMeeter FX\"
+      node.description = \"PipeMeter FX\"
       filter.graph = {{
         nodes = [
 {nodes}        ]
@@ -470,6 +470,6 @@ mod tests {
     #[test]
     fn the_two_chains_have_different_names() {
         assert_ne!(Kind::Reverb.node(), Kind::Delay.node());
-        assert!(config(Kind::Delay).contains("pipemeeter_delay"));
+        assert!(config(Kind::Delay).contains("pipemeter_delay"));
     }
 }

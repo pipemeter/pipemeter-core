@@ -126,7 +126,7 @@ pub fn is_chain_node(name: &str) -> bool {
     else {
         return false;
     };
-    rest.ends_with("_eq") || rest.ends_with("_fx") || rest.starts_with("pipemeeter_")
+    rest.ends_with("_eq") || rest.ends_with("_fx") || rest.starts_with("pipemeter_")
 }
 
 /// Kill any helper left over from a previous run.
@@ -221,7 +221,7 @@ pub fn spawn_config(name: &str, config: &str) -> io::Result<Chain> {
 /// is regenerated every launch and means nothing between them.
 fn config_dir() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    dir.join("pipemeeter")
+    dir.join("pipemeter")
 }
 
 fn config_path(name: &str) -> PathBuf {
@@ -315,8 +315,8 @@ context.modules = [
   {{ name = libpipewire-module-filter-chain
     args = {{
       node.name = \"{name}\"
-      node.description = \"PipeMeeter EQ\"
-      media.name = \"PipeMeeter EQ\"
+      node.description = \"PipeMeter EQ\"
+      media.name = \"PipeMeter EQ\"
       filter.graph = {{
         nodes = [
 {nodes}
@@ -363,8 +363,8 @@ mod tests {
 
     #[test]
     fn both_chain_kinds_are_recognised_at_both_ends() {
-        assert!(super::is_chain_node("input.pipemeeter_vaio_eq"));
-        assert!(super::is_chain_node("output.pipemeeter_vaio_eq"));
+        assert!(super::is_chain_node("input.pipemeter_vaio_eq"));
+        assert!(super::is_chain_node("output.pipemeter_vaio_eq"));
         assert!(super::is_chain_node("input.some_device_fx"));
         assert!(super::is_chain_node("output.some_device_fx"));
     }
@@ -373,8 +373,8 @@ mod tests {
     fn nothing_else_is_mistaken_for_a_chain() {
         // The meter streams in particular: they are ours, and routing one
         // would put a capture stream where a strip should be.
-        assert!(!super::is_chain_node("pipemeeter_meter"));
-        assert!(!super::is_chain_node("pipemeeter_vaio"));
+        assert!(!super::is_chain_node("pipemeter_meter"));
+        assert!(!super::is_chain_node("pipemeter_vaio"));
         assert!(!super::is_chain_node("alsa_output.something"));
     }
 
@@ -393,8 +393,8 @@ mod tests {
 
     #[test]
     fn the_config_names_every_band_and_the_chain() {
-        let text = config("pipemeeter_vaio_eq", Kind::Equaliser);
-        assert!(text.contains("node.name = \"pipemeeter_vaio_eq\""));
+        let text = config("pipemeter_vaio_eq", Kind::Equaliser);
+        assert!(text.contains("node.name = \"pipemeter_vaio_eq\""));
         for band in BANDS {
             assert!(text.contains(&format!("name = {band}")), "missing {band}");
         }

@@ -98,10 +98,10 @@ pub fn start(core: &CoreRc, node_id: u32, path: &Path, rate: u32) -> Option<Reco
         // The bus is a sink, so its monitor is what carries the mix.
         *pipewire::keys::STREAM_CAPTURE_SINK => "true",
         *pipewire::keys::TARGET_OBJECT => node_id.to_string(),
-        *pipewire::keys::NODE_NAME => "pipemeeter_recorder",
+        *pipewire::keys::NODE_NAME => "pipemeter_recorder",
     };
 
-    let stream = StreamRc::new(core.clone(), "pipemeeter-recorder", props).ok()?;
+    let stream = StreamRc::new(core.clone(), "pipemeter-recorder", props).ok()?;
     let data = UserData {
         format: spa::param::audio::AudioInfoRaw::default(),
         shared: Arc::clone(&shared),
@@ -147,7 +147,7 @@ pub fn start(core: &CoreRc, node_id: u32, path: &Path, rate: u32) -> Option<Reco
 
     let drain = Arc::clone(&shared);
     let writer_thread = std::thread::Builder::new()
-        .name("pipemeeter-recorder".to_owned())
+        .name("pipemeter-recorder".to_owned())
         .spawn(move || {
             loop {
                 let batch = {
