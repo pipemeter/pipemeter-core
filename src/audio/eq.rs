@@ -90,42 +90,32 @@ pub enum Kind {
 
 /// The brickwall limiter at the end of every strip graph.
 ///
-/// `caps` "Compress" in **mode 0**, which is the only one of its three
-/// that is transparent when it is not acting: measured against a
-/// reference capture, mode 0 returned it to the hundredth of a decibel
-/// while modes 1 and 2 quietly lost 2.9 and 4.4 dB. That matters more
-/// than anything else here, because this stage sits in every strip
-/// including the one carrying a live microphone.
+/// `clamp`, not a compressor. A compressor was tried first and rejected
+/// for a specific reason: its threshold is not absolute. Measured against
+/// one tone it tracked its dial nicely, and against a tone 3 dB quieter
+/// the same setting did nothing at all, so the number could never mean
+/// what the reference promises - that the signal "is never going over the
+/// threshold". A clamp means exactly that, and measured exactly that:
+/// +-0.5 held a loud tone at -6.02 dBFS and +-0.25 at -12.04, which are
+/// the arithmetic answers to the hundredth.
+///
+/// It clips rather than ducking, so it distorts when it acts. That is the
+/// honest trade for a guarantee, and a limiter that is doing its job is
+/// one you have already set too low.
 pub const LIMIT_NODE: &str = "lim";
 
-/// Its threshold, as filter-chain addresses it.
-pub const LIMIT_CONTROL: &str = "lim:threshold";
+/// Its two controls, as filter-chain addresses them.
+pub const LIMIT_MAX: &str = "lim:Max";
+pub const LIMIT_MIN: &str = "lim:Min";
 
-/// The lowest threshold worth sending. Below about 0.6 the plugin stops
-/// responding - measured output flattens out around -24.7 dBFS however
-/// much further it is pushed - so the range is bounded rather than
-/// pretending the bottom half does something.
-const LIMIT_THRESHOLD_MIN: f32 = 0.7;
+/// The lowest the mixer offers. A clamp is exact anywhere, so this is a
+/// judgement about what is useful rather than what works.
+pub const LIMIT_MIN_DB: f32 = -40.0;
 
-/// Decibels per unit of threshold, and the point the line is fixed at.
-///
-/// Fitted to a calibration sweep against a -0.92 dBFS tone: threshold 0.8
-/// held it at -10.77 dBFS and 0.7 at -20.29. The fit puts 0 dB at 0.913,
-/// which agrees with 0.9 having measured transparent - two ways of
-/// arriving at the same number, which is why it is trusted.
-const LIMIT_DB_PER_UNIT: f32 = 95.2;
-const LIMIT_ANCHOR_T: f32 = 0.8;
-const LIMIT_ANCHOR_DB: f32 = -10.77;
-
-/// The lowest threshold the mixer offers, in dB. The plugin cannot
-/// usefully hold a signal below this.
-pub const LIMIT_MIN_DB: f32 = -20.0;
-
-/// Turn a threshold in dB into the plugin's 0..1 control.
+/// Turn a threshold in dB into the amplitude the clamp holds it at.
 #[must_use]
-pub fn limit_threshold(db: f32) -> f32 {
-    let raw = LIMIT_ANCHOR_T + (db - LIMIT_ANCHOR_DB) / LIMIT_DB_PER_UNIT;
-    raw.clamp(LIMIT_THRESHOLD_MIN, 1.0)
+pub fn limit_amplitude(db: f32) -> f32 {
+    10.0f32.powf(db / 20.0)
 }
 
 /// The controls the AUDIBILITY knobs drive, as filter-chain addresses them.
@@ -328,7 +318,7 @@ fn equaliser_graph() -> (String, String, &'static str, &'static str) {
         .to_owned();
     let nodes = format!("{nodes}\n{}", limiter_node());
     let links = format!("{links}\n{}", link_into_limiter("treble:Out"));
-    (nodes, links, "bass:In", "lim:out")
+    (nodes, links, "bass:In", "lim:Out")
 }
 
 /// Six peaking biquads in series.
@@ -376,20 +366,21 @@ control = {{ \"strength\" = 0.0 \"threshold\" = 0.5 \"attack\" = 0.75 \"release\
     let links = "          { output = \"gate:out\" input = \"comp:in\" }".to_owned();
     let nodes = format!("{nodes}\n{}", limiter_node());
     let links = format!("{links}\n{}", link_into_limiter("comp:out"));
-    (nodes, links, "gate:in", "lim:out")
+    (nodes, links, "gate:in", "lim:Out")
 }
 
 /// The limiter that ends every strip graph, resting wide open.
 fn limiter_node() -> String {
-    let open = limit_threshold(crate::model::LIMIT_OFF);
+    let open = limit_amplitude(crate::model::LIMIT_OFF);
     format!(
-        "          {{ type = ladspa name = {LIMIT_NODE} plugin = caps label = Compress control = {{ \"mode\" = 0 \"strength\" = 1.0 \"threshold\" = {open} \"attack\" = 0.1 \"release\" = 0.3 \"gain (dB)\" = 0.0 }} }}"
+        "          {{ type = builtin name = {LIMIT_NODE} label = clamp control = {{ \"Min\" = {} \"Max\" = {open} }} }}",
+        -open
     )
 }
 
 /// Attach the last stage of a graph to the limiter.
 fn link_into_limiter(from: &str) -> String {
-    format!("          {{ output = \"{from}\" input = \"{LIMIT_NODE}:in\" }}")
+    format!("          {{ output = \"{from}\" input = \"{LIMIT_NODE}:In\" }}")
 }
 
 /// The boilerplate every chain shares.
@@ -541,7 +532,7 @@ mod tests {
         assert!(text.contains("label = Compress"));
         assert!(text.contains("output = \"gate:out\" input = \"comp:in\""));
         assert!(text.contains("inputs  = [ \"gate:in\" ]"));
-        assert!(text.contains("outputs = [ \"lim:out\" ]"), "{text}");
+        assert!(text.contains("outputs = [ \"lim:Out\" ]"), "{text}");
         assert!(!text.contains("bq_lowshelf"));
     }
 
@@ -549,7 +540,7 @@ mod tests {
     fn the_bands_are_wired_in_series_from_input_to_output() {
         let text = config("x", Kind::Equaliser);
         assert!(text.contains("inputs  = [ \"bass:In\" ]"));
-        assert!(text.contains("outputs = [ \"lim:out\" ]"), "{text}");
+        assert!(text.contains("outputs = [ \"lim:Out\" ]"), "{text}");
         assert!(text.contains("output = \"bass:Out\" input = \"mid:In\""));
     }
 
@@ -605,21 +596,9 @@ mod tests {
     /// At rest it has to be the measured no-op, not merely close to one.
     #[test]
     fn the_resting_limiter_is_the_transparent_threshold() {
-        assert!((super::limit_threshold(crate::model::LIMIT_OFF) - 1.0).abs() < f32::EPSILON);
-    }
-
-    /// The two points the calibration sweep actually measured.
-    #[test]
-    fn the_mapping_reproduces_the_sweep() {
-        assert!((super::limit_threshold(-10.77) - 0.8).abs() < 0.005);
-        assert!((super::limit_threshold(-20.29) - 0.7).abs() < 0.005);
-    }
-
-    /// Below the useful range the plugin stops responding, so the control
-    /// stops rather than pretending.
-    #[test]
-    fn the_threshold_is_bounded_at_both_ends() {
-        assert!(super::limit_threshold(-200.0) >= 0.7);
-        assert!(super::limit_threshold(200.0) <= 1.0);
+        assert!(super::limit_amplitude(crate::model::LIMIT_OFF) > 3.9);
+        assert!((super::limit_amplitude(0.0) - 1.0).abs() < 1e-5);
+        assert!((super::limit_amplitude(-6.02) - 0.5).abs() < 0.001);
+        assert!((super::limit_amplitude(-12.04) - 0.25).abs() < 0.001);
     }
 }
