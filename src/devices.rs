@@ -19,7 +19,16 @@
 
 use std::collections::BTreeMap;
 
-use crate::audio::Direction;
+use crate::audio::{Direction, Kind};
+
+/// Seconds since the Unix epoch, UTC.
+#[must_use]
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
 
 /// A device the mixer knows of, present or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +38,20 @@ pub struct Known {
     /// What to show a person.
     pub description: String,
     pub direction: Direction,
+    /// Hardware, or made up in software.
+    ///
+    /// Remembered rather than worked out on demand, because it cannot be
+    /// worked out on demand: an unplugged device is not in the graph to
+    /// ask. Guessing it from the node name is what this replaces, and the
+    /// guess was wrong for exactly the devices that come and go.
+    pub kind: Kind,
+    /// When it was last in the graph, as seconds since the Unix epoch,
+    /// UTC. `None` for a device remembered from before this was recorded.
+    ///
+    /// What lets the interface say "last seen 2 weeks ago" about something
+    /// unplugged, which is the difference between a headset charging and
+    /// one sold last year.
+    pub last_seen: Option<u64>,
     /// Whether it is in the graph right now.
     pub present: bool,
 }
@@ -45,11 +68,23 @@ impl Registry {
     ///
     /// Returns whether this is the first time it has been seen, which is
     /// what decides if the list needs writing back out.
-    pub fn remember(&mut self, name: &str, description: &str, direction: Direction) -> bool {
+    pub fn remember(
+        &mut self,
+        name: &str,
+        description: &str,
+        direction: Direction,
+        kind: Kind,
+    ) -> bool {
+        let at = now();
         if let Some(known) = self.seen.get_mut(name) {
             known.present = true;
+            // A live look settles the kind, whatever was assumed of it
+            // while it was away.
+            let rekinded = known.kind != kind;
+            known.kind = kind;
+            known.last_seen = Some(at);
             if description.is_empty() || known.description == description {
-                return false;
+                return rekinded;
             }
             description.clone_into(&mut known.description);
             return true;
@@ -60,6 +95,8 @@ impl Registry {
                 name: name.to_owned(),
                 description: description.to_owned(),
                 direction,
+                kind,
+                last_seen: Some(at),
                 present: true,
             },
         );
@@ -146,13 +183,22 @@ impl Registry {
 /// What loading the settings file does. Everything read starts out absent:
 /// only the graph can say otherwise.
 impl Registry {
-    pub fn remember_absent(&mut self, name: &str, description: &str, direction: Direction) {
+    pub fn remember_absent(
+        &mut self,
+        name: &str,
+        description: &str,
+        direction: Direction,
+        kind: Kind,
+        last_seen: Option<u64>,
+    ) {
         self.seen.insert(
             name.to_owned(),
             Known {
                 name: name.to_owned(),
                 description: description.to_owned(),
                 direction,
+                kind,
+                last_seen,
                 present: false,
             },
         );
@@ -166,13 +212,18 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, Registry};
+    use super::{Direction, Kind, Registry};
 
     fn populated() -> Registry {
         let mut registry = Registry::default();
-        registry.remember("alsa_output.hdmi", "HDMI Audio", Direction::Sink);
-        registry.remember("alsa_input.mic", "Headset Microphone", Direction::Source);
-        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink);
+        registry.remember("alsa_output.hdmi", "HDMI Audio", Direction::Sink, Kind::Physical);
+        registry.remember(
+            "alsa_input.mic",
+            "Headset Microphone",
+            Direction::Source,
+            Kind::Physical,
+        );
+        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink, Kind::Physical);
         registry
     }
 
@@ -192,7 +243,7 @@ mod tests {
     fn it_comes_back_present_when_it_comes_back() {
         let mut registry = populated();
         registry.mark_all_absent();
-        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink);
+        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink, Kind::Physical);
         assert!(registry.is_present("bluez.headset"));
     }
 
@@ -200,7 +251,7 @@ mod tests {
     fn the_present_ones_are_listed_first() {
         let mut registry = populated();
         registry.mark_all_absent();
-        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink);
+        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink, Kind::Physical);
         let sinks = registry.of(Direction::Sink);
         assert_eq!(sinks[0].name, "bluez.headset", "the plugged-in one leads");
         assert!(!sinks[1].present);
@@ -216,29 +267,73 @@ mod tests {
     #[test]
     fn a_better_description_replaces_a_worse_one() {
         let mut registry = Registry::default();
-        registry.remember("x", "x", Direction::Sink);
-        assert!(registry.remember("x", "Proper Name", Direction::Sink));
+        registry.remember("x", "x", Direction::Sink, Kind::Virtual);
+        assert!(registry.remember("x", "Proper Name", Direction::Sink, Kind::Virtual));
         assert_eq!(registry.description_of("x"), Some("Proper Name"));
     }
 
     #[test]
     fn seeing_the_same_device_twice_is_not_a_change() {
         let mut registry = Registry::default();
-        assert!(registry.remember("x", "X", Direction::Sink));
-        assert!(!registry.remember("x", "X", Direction::Sink));
+        assert!(registry.remember("x", "X", Direction::Sink, Kind::Virtual));
+        assert!(!registry.remember("x", "X", Direction::Sink, Kind::Virtual));
     }
 
     /// What loading the settings file does: names without presence.
     #[test]
     fn a_remembered_device_starts_out_absent() {
         let mut registry = Registry::default();
-        registry.remember_absent("alsa_input.mic", "Headset Microphone", Direction::Source);
+        registry.remember_absent(
+            "alsa_input.mic",
+            "Headset Microphone",
+            Direction::Source,
+            Kind::Physical,
+            None,
+        );
         assert_eq!(
             registry.description_of("alsa_input.mic"),
             Some("Headset Microphone")
         );
         assert!(!registry.is_present("alsa_input.mic"));
         assert_eq!(registry.of(Direction::Source).len(), 1);
+    }
+
+    /// The point of remembering the kind: a device that is away cannot be
+    /// asked what it is, and the name is not the answer.
+    #[test]
+    fn an_absent_device_keeps_the_kind_it_was_stored_with() {
+        let mut registry = Registry::default();
+        registry.remember_absent(
+            "bluez_output.AC80",
+            "WH-1000XM4",
+            Direction::Sink,
+            Kind::Physical,
+            Some(1_700_000_000),
+        );
+        assert_eq!(registry.of(Direction::Sink)[0].kind, Kind::Physical);
+    }
+
+    /// Seeing it live settles the kind, whatever was assumed while it was
+    /// away - and counts as a change, so the list gets written back.
+    #[test]
+    fn a_live_look_corrects_a_stored_kind() {
+        let mut registry = Registry::default();
+        registry.remember_absent("x", "X", Direction::Sink, Kind::Virtual, None);
+        assert!(registry.remember("x", "X", Direction::Sink, Kind::Physical));
+        assert_eq!(registry.of(Direction::Sink)[0].kind, Kind::Physical);
+        assert!(!registry.remember("x", "X", Direction::Sink, Kind::Physical));
+    }
+
+    /// A stored timestamp survives being read back, and seeing the device
+    /// live moves it on.
+    #[test]
+    fn a_sighting_is_stamped() {
+        let mut registry = Registry::default();
+        registry.remember_absent("x", "X", Direction::Sink, Kind::Virtual, Some(1_700_000_000));
+        assert_eq!(registry.of(Direction::Sink)[0].last_seen, Some(1_700_000_000));
+        registry.remember("x", "X", Direction::Sink, Kind::Virtual);
+        let moved = registry.of(Direction::Sink)[0].last_seen.expect("stamped");
+        assert!(moved > 1_700_000_000, "a live sighting should be recent");
     }
 
     #[test]
@@ -251,7 +346,7 @@ mod tests {
     fn forgetting_the_absent_spares_what_is_plugged_in() {
         let mut registry = populated();
         registry.mark_all_absent();
-        registry.remember("alsa_output.hdmi", "HDMI Audio", Direction::Sink);
+        registry.remember("alsa_output.hdmi", "HDMI Audio", Direction::Sink, Kind::Physical);
         assert_eq!(registry.forget_absent(), 2);
         assert_eq!(registry.len(), 1);
         assert!(registry.is_present("alsa_output.hdmi"));

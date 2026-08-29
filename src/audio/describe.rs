@@ -76,6 +76,7 @@ pub(super) fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> O
         rate: node_rate(props),
         channels: node_channels(props),
         assignable: !ours,
+        kind: super::Kind::of(props.get("device.api")),
     })
 }
 

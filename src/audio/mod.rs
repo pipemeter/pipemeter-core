@@ -22,7 +22,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 pub use links::End;
 pub use links::{Route, Tap};
-pub use nodes::{Command, Device, Direction, LinkInfo, Stream};
+pub use nodes::{Command, Device, Direction, Kind, LinkInfo, Stream};
 
 /// Fader dB to the linear amplitude `PipeWire` wants.
 ///

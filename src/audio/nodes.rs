@@ -29,6 +29,56 @@ pub enum Direction {
     Sink,
 }
 
+/// Whether a device is a real piece of hardware or something made up in
+/// software.
+///
+/// Decided by `device.api`, which `PipeWire` sets on nodes that have a
+/// card behind them - `alsa`, `bluez5` - and leaves off null sinks,
+/// loopbacks and the like. Not by the node name: a Bluetooth headset is
+/// `bluez_output.*` and is as physical as anything, so a test for an
+/// `alsa_` prefix files real hardware under Virtual.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// A card, a USB interface, a Bluetooth headset.
+    Physical,
+    /// A null sink, a loopback, another mixer's cable.
+    ///
+    /// The default because it is the safe guess: it is what we assume of a
+    /// device we have never had a live look at.
+    #[default]
+    Virtual,
+}
+
+impl Kind {
+    /// What `device.api` says about a node, if anything.
+    #[must_use]
+    pub fn of(api: Option<&str>) -> Self {
+        match api {
+            Some(api) if !api.is_empty() => Self::Physical,
+            _ => Self::Virtual,
+        }
+    }
+
+    /// How it is written in the settings file, and read back.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Physical => "physical",
+            Self::Virtual => "virtual",
+        }
+    }
+
+    /// The other half of [`Kind::as_str`].
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        if text == "physical" {
+            Self::Physical
+        } else {
+            Self::Virtual
+        }
+    }
+}
+
 /// An application playing audio, as the registry reports it.
 #[derive(Debug, Clone)]
 pub struct Stream {
@@ -73,6 +123,8 @@ pub struct Device {
     /// than tracked separately, since everything else about them - id
     /// lookup, removal, port bookkeeping - is identical.
     pub assignable: bool,
+    /// Hardware, or made up in software. See [`Kind`].
+    pub kind: Kind,
 }
 
 /// A request from the UI thread to the `PipeWire` thread.
@@ -679,5 +731,44 @@ fn send_props(node: &pipewire::node::Node, object: &pipewire::spa::pod::Object) 
     let bytes = cursor.into_inner();
     if let Some(pod) = pipewire::spa::pod::Pod::from_bytes(&bytes) {
         node.set_param(pipewire::spa::param::ParamType::Props, 0, pod);
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::Kind;
+
+    /// `device.api` is what `PipeWire` puts on a node with a card behind
+    /// it, and leaves off everything else.
+    #[test]
+    fn a_card_makes_it_physical() {
+        assert_eq!(Kind::of(Some("alsa")), Kind::Physical);
+        assert_eq!(Kind::of(Some("bluez5")), Kind::Physical);
+    }
+
+    #[test]
+    fn a_null_sink_has_no_api_and_is_virtual() {
+        assert_eq!(Kind::of(None), Kind::Virtual);
+        assert_eq!(Kind::of(Some("")), Kind::Virtual);
+    }
+
+    /// The bug this replaces: a Bluetooth headset is not called `alsa_`
+    /// and is not virtual.
+    #[test]
+    fn a_bluetooth_headset_is_not_virtual() {
+        assert_eq!(Kind::of(Some("bluez5")), Kind::Physical);
+    }
+
+    #[test]
+    fn the_spelling_round_trips() {
+        for kind in [Kind::Physical, Kind::Virtual] {
+            assert_eq!(Kind::parse(kind.as_str()), kind);
+        }
+    }
+
+    /// Anything unrecognised reads as virtual, which is the safe guess.
+    #[test]
+    fn an_unknown_spelling_is_virtual() {
+        assert_eq!(Kind::parse("wat"), Kind::Virtual);
     }
 }
