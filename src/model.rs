@@ -213,6 +213,10 @@ impl Bus {
     }
 }
 
+/// Where the limiter rests: the top of the fader range, which is where
+/// the original leaves it and means no limiting at all.
+pub const LIMIT_OFF: f32 = 12.0;
+
 /// Indices into [`Bus::toggles`].
 pub const SEL: usize = 0;
 pub const MONO: usize = 1;
@@ -313,6 +317,13 @@ pub struct Strip {
     pub buses: [bool; 8],
     /// Fader position in dB.
     pub gain_db: f32,
+    /// Where the brickwall limiter holds the signal, in dB.
+    ///
+    /// The reference sets this by dragging on the strip's own VU meter and
+    /// stores it as `dblimit`. It rests at the top of the fader range,
+    /// which is the same as no limiting - so a strip that has never been
+    /// touched is not quietly being squashed.
+    pub limit_db: f32,
     /// Mute, solo, mono and EQ-on. An array rather than four named flags,
     /// matching how [`Bus`] stores its own. Index with the
     /// constants below.
@@ -436,6 +447,7 @@ impl Strip {
             device_missing: false,
             buses: [false; 8],
             gain_db: 0.0,
+            limit_db: LIMIT_OFF,
             flags: [false; 4],
             levels: (0.0, 0.0),
             pad: [(0.5, 0.5); 3],
