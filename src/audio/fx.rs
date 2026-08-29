@@ -76,15 +76,34 @@ pub const BUSES: usize = 8;
 pub enum Kind {
     Reverb,
     Delay,
+    /// An external FX send. It has no processing of its own: it gathers
+    /// each strip's send at that strip's own level and offers the mix as a
+    /// node any program can capture. The effect lives in someone else's
+    /// software, which is what makes it external.
+    External1,
+    External2,
 }
 
 impl Kind {
+    /// Whether the chain hands its result back to the buses.
+    ///
+    /// A reverb or a delay does: the FX RETURN knobs are one gain per bus
+    /// on its way out. An external send does not - its output is the
+    /// product, offered to whatever wants to capture it - so it carries a
+    /// single output pair instead of one per bus.
+    #[must_use]
+    pub fn returns_to_buses(self) -> bool {
+        matches!(self, Self::Reverb | Self::Delay)
+    }
+
     /// The node name, and the suffix that marks the helper as ours.
     #[must_use]
     pub fn node(self) -> &'static str {
         match self {
             Self::Reverb => "pipemeeter_reverb",
             Self::Delay => "pipemeeter_delay",
+            Self::External1 => "pipemeeter_extfx1",
+            Self::External2 => "pipemeeter_extfx2",
         }
     }
 
@@ -115,6 +134,14 @@ control = { \"Delay (s)\" = 0.25 \"Feedback\" = 0.3 } }"
                  \x20         { output = \"sumR:Out\" input = \"dlyR:In\" }\n\
                  \x20         { output = \"dlyL:Out\" input = \"outL:In\" }\n\
                  \x20         { output = \"dlyR:Out\" input = \"outR:In\" }"
+                    .to_owned(),
+            ),
+            // Straight through: the mix is the product, so there is nothing
+            // between the summing and the output.
+            Self::External1 | Self::External2 => (
+                String::new(),
+                "          { output = \"sumL:Out\" input = \"outL:In\" }\n\
+                 \x20         { output = \"sumR:Out\" input = \"outR:In\" }"
                     .to_owned(),
             ),
         }
@@ -196,41 +223,54 @@ control = {{ {gains} }} }}"
     links.push_str(&effect_links);
     links.push('\n');
 
-    // The effect's own output, then one gain per bus on the way out. These
-    // are the FX RETURN knobs.
+    // The effect's own output, then whatever carries it away.
     for side in ["L", "R"] {
         let _ = writeln!(
             nodes,
             "          {{ type = builtin name = out{side} label = copy }}"
         );
-        for bus in 0..BUSES {
-            let _ = writeln!(
-                nodes,
-                "          {{ type = builtin name = r{bus}{side} label = linear \
+        // A returning effect gets one gain per bus, which are the FX RETURN
+        // knobs. A send has nowhere to return to: its output is the product,
+        // for another program to capture, so it ends at `out`.
+        if kind.returns_to_buses() {
+            for bus in 0..BUSES {
+                let _ = writeln!(
+                    nodes,
+                    "          {{ type = builtin name = r{bus}{side} label = linear \
 control = {{ \"Mult\" = 0.0 \"Add\" = 0.0 }} }}"
-            );
-            let _ = writeln!(
-                links,
-                "          {{ output = \"out{side}:Out\" input = \"r{bus}{side}:In\" }}"
-            );
+                );
+                let _ = writeln!(
+                    links,
+                    "          {{ output = \"out{side}:Out\" input = \"r{bus}{side}:In\" }}"
+                );
+            }
         }
     }
 
-    wrap(name, &nodes, &links)
+    wrap(name, &nodes, &links, kind)
 }
 
 /// Every input and every output named, one for one against the channel
 /// counts. That is what keeps filter-chain from duplicating the graph and
 /// guessing an order, which is the mistake that silenced the strips.
-fn wrap(name: &str, nodes: &str, links: &str) -> String {
+fn wrap(name: &str, nodes: &str, links: &str, kind: Kind) -> String {
     let inputs = (0..STRIPS)
         .flat_map(|s| [format!("\"s{s}L:In\""), format!("\"s{s}R:In\"")])
         .collect::<Vec<_>>()
         .join(" ");
-    let outputs = (0..BUSES)
-        .flat_map(|b| [format!("\"r{b}L:Out\""), format!("\"r{b}R:Out\"")])
-        .collect::<Vec<_>>()
-        .join(" ");
+    // One pair per bus for a returning effect, a single pair for a send.
+    // The count has to match what the graph actually produces: a chain
+    // declaring more outputs than it has breaks its channel mapping and
+    // passes silence, which is how every strip went quiet once.
+    let output_pairs = if kind.returns_to_buses() { BUSES } else { 1 };
+    let outputs = if kind.returns_to_buses() {
+        (0..BUSES)
+            .flat_map(|b| [format!("\"r{b}L:Out\""), format!("\"r{b}R:Out\"")])
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        "\"outL:Out\" \"outR:Out\"".to_owned()
+    };
 
     let positions = |pairs: usize| {
         std::iter::once("FL".to_owned())
@@ -280,7 +320,7 @@ context.modules = [
         in_ch = STRIPS * 2,
         out_ch = BUSES * 2,
         in_pos = positions(STRIPS),
-        out_pos = positions(BUSES),
+        out_pos = positions(output_pairs),
     )
 }
 
@@ -297,11 +337,24 @@ pub fn spawn(kind: Kind) -> io::Result<Chain> {
 mod tests {
     use super::{BUSES, Kind, STRIPS, config, return_control, send_control};
 
+    /// A send declares one output pair, not one per bus. A chain whose
+    /// outputs outnumber its captures breaks its channel mapping and
+    /// passes silence, which is how every strip went quiet once.
+    #[test]
+    fn a_send_carries_a_single_output_pair() {
+        let send = config(Kind::External1);
+        assert!(send.contains("\"outL:Out\" \"outR:Out\""), "{send}");
+        assert!(!send.contains("r0L:Out"), "a send has no per-bus returns");
+        // And the returning effects still do.
+        assert!(config(Kind::Reverb).contains("r0L:Out"));
+    }
+
     #[test]
     #[ignore = "writes a config for the probe script rather than asserting"]
     fn dump_for_probe() {
         std::fs::write("/tmp/fx_reverb.conf", config(Kind::Reverb)).expect("writes");
         std::fs::write("/tmp/fx_delay.conf", config(Kind::Delay)).expect("writes");
+        std::fs::write("/tmp/fx_extfx1.conf", config(Kind::External1)).expect("writes");
     }
 
     #[test]
