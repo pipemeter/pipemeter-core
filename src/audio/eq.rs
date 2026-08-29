@@ -57,6 +57,10 @@ pub const BUS_FREQUENCIES: [f32; 6] = [50.0, 200.0, 800.0, 2_000.0, 8_000.0, 12_
 /// The Q every cell starts at.
 pub const BUS_Q: f32 = 3.0;
 
+/// What a bus's own EQ chain is called, before its index. `spawn` adds
+/// the `_buseq` suffix, so this must not carry one itself.
+pub const BUS_CHAIN_PREFIX: &str = "pipemeter_bus";
+
 /// How many cells a bus EQ has.
 pub const BUS_BANDS: usize = BUS_FREQUENCIES.len();
 
