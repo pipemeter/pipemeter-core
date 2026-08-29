@@ -1,14 +1,14 @@
 [package]
-name = "pipemeeter-core"
+name = "pipemeter-core"
 version = "0.1.0"
 edition = "2024"
 authors = ["PipeMeeter Team <dev@pipemeeter.org>"]
 description = "Core PipeWire audio routing, node and port management, and meter processing for PipeMeeter"
 license = "Unlicense"
-repository = "https://github.com/pipemeeter/pipemeeter-core"
+repository = "https://github.com/pipemeeter/pipemeter-core"
 
 [lib]
-name = "pipemeeter_core"
+name = "pipemeter_core"
 path = "src/lib.rs"
 
 [dependencies]

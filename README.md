@@ -1,4 +1,4 @@
-# pipemeeter-core
+# pipemeter-core
 
 PipeWire handling for a fixed layout mixer. It creates the virtual devices,
 starts a filter chain helper per strip, manages links, reads meters, and
