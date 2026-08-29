@@ -137,24 +137,7 @@ pub fn path() -> Option<PathBuf> {
     Some(
         crate::paths::documents_dir()?
             .join("Pipemeter")
-            .join("Pipemeter_Devices.tsv"),
-    )
-}
-
-/// Where the list used to live, before the library took its own name.
-///
-/// Read when the current one is missing, so a mixer that has been running
-/// for a while does not forget every device it knows the first time it is
-/// updated. Never written; the next save moves the list to the new path.
-fn former_path() -> Option<PathBuf> {
-    // Derived rather than written out: this crate is public and the old
-    // name is the mixer's, which does not belong in it. The former spelling
-    // is this one with the vowel doubled.
-    let former = |name: &str| name.replace("eme", "emee");
-    Some(
-        crate::paths::documents_dir()?
-            .join(former("Pipemeter"))
-            .join(former("Pipemeter_Devices.tsv")),
+            .join("Devices.tsv"),
     )
 }
 
@@ -165,17 +148,8 @@ pub fn load() -> Registry {
     let Some(path) = path() else {
         return Registry::default();
     };
-    let text = if let Ok(text) = std::fs::read_to_string(&path) {
-        text
-    } else {
-        let Some(former) = former_path().filter(|p| p.exists()) else {
-            return Registry::default();
-        };
-        let Ok(text) = std::fs::read_to_string(&former) else {
-            return Registry::default();
-        };
-        log::info!("carrying the device list over from {}", former.display());
-        text
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Registry::default();
     };
     let registry = parse(&text);
     log::info!(

@@ -219,14 +219,7 @@ pub const PREFIX: &str = "pipemeter_";
 /// Whether a node is one this library created.
 #[must_use]
 pub fn is_ours(name: &str) -> bool {
-    // A device made by a build from before the library took its own name is
-    // still ours, and a run that did not recognise it would leave it in the
-    // graph for good: nothing else is ever going to clean it up. The old
-    // prefix is the new one with a doubled vowel, spelled that way rather
-    // than written out because this crate is public and the mixer's name is
-    // not.
-    let former = PREFIX.replace("eme", "emee");
-    all_specs().any(|s| s.name == name) || name.starts_with(&former)
+    all_specs().any(|s| s.name == name)
 }
 
 #[cfg(test)]
