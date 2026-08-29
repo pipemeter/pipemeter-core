@@ -90,3 +90,95 @@ impl Mode {
         MODES.iter().position(|m| *m == self).unwrap_or(0) as u32
     }
 }
+
+/// Bus names, in fixed order.
+pub const BUS_NAMES: [&str; 8] = ["A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3"];
+
+/// State of one output bus.
+#[derive(Debug, Clone)]
+pub struct Bus {
+    pub name: &'static str,
+    /// The name the user gave this bus. Shown up its fader; absent means
+    /// "Fader Gain", the same rule the input strips follow.
+    pub label: Option<String>,
+    /// The `PipeWire` node this bus feeds. The B buses are our own null
+    /// sinks; the A buses get one when a hardware out is assigned from the
+    /// device picker, so this is owned rather than static.
+    pub node_name: Option<String>,
+    /// Human name of the device assigned to this bus, shown up the fader.
+    pub device: Option<String>,
+    /// Whether that device is assigned but not currently in the graph. The
+    /// bus keeps its assignment either way and says so in red.
+    pub device_missing: bool,
+    pub mode: Mode,
+    /// The bus this one is monitoring, if any.
+    ///
+    /// A monitoring bus carries whatever its target carries, which is what
+    /// makes a pair of headphones on A1 able to hear the speakers on A2
+    /// without routing every strip twice. It replaces the mix mode rather
+    /// than sitting beside it - the original's button shows "Mon A2" where
+    /// the mode would be, filled cream, with no channel dots.
+    pub monitor: Option<usize>,
+    /// SEL, mono, EQ and Mute, in that order. An array rather than four named
+    /// flags so the struct stays under clippy's bool limit, and because the
+    /// three lower ones are drawn from one loop anyway.
+    pub toggles: [bool; 4],
+    pub gain_db: f32,
+    /// FX return knobs, reverb and delay.
+    pub fx_return: [f32; 2],
+    pub levels: (f32, f32),
+}
+
+impl Bus {
+    /// The four FX returns as the settings file stores them: reverb, delay,
+    /// then the two external ones. Only the first two have knobs here, so
+    /// the others go out as they came in — which is why the caller passes
+    /// what it read rather than this making them up.
+    #[must_use]
+    pub fn fx_return_all(&self) -> [f32; 4] {
+        [self.fx_return[0], self.fx_return[1], 0.0, 0.0]
+    }
+
+    /// What runs up the fader: the name the user gave the bus, else the
+    /// device on it, else the default. The original shows the device, which
+    /// is what makes a wall of eight faders readable at a glance.
+    #[must_use]
+    pub fn legend(&self) -> &str {
+        self.label
+            .as_deref()
+            .or(self.device.as_deref())
+            .unwrap_or("Fader Gain")
+    }
+
+    pub fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            label: None,
+            device: None,
+            device_missing: false,
+            monitor: None,
+            node_name: match name {
+                "B1" => Some("pipemeter_b1".to_owned()),
+                "B2" => Some("pipemeter_b2".to_owned()),
+                "B3" => Some("pipemeter_b3".to_owned()),
+                _ => None,
+            },
+            mode: Mode::Normal,
+            toggles: [false; 4],
+            gain_db: 0.0,
+            fx_return: [0.0; 2],
+            levels: (0.0, 0.0),
+        }
+    }
+}
+
+/// Indices into [`Bus::toggles`].
+pub const SEL: usize = 0;
+pub const MONO: usize = 1;
+pub const EQ: usize = 2;
+pub const MUTE: usize = 3;
+
+/// Build the eight buses in their fixed order.
+pub fn default_buses() -> Vec<Bus> {
+    BUS_NAMES.iter().map(|n| Bus::new(n)).collect()
+}
