@@ -192,6 +192,9 @@ fn run(
     // One capture stream per metered node, held for as long as the node is.
     let attached: Rc<RefCell<HashMap<u32, Meter>>> = Rc::new(RefCell::new(HashMap::new()));
     let (attached_add, attached_gone) = (Rc::clone(&attached), Rc::clone(&attached));
+
+    let formats: Formats = Rc::new(RefCell::new(HashMap::new()));
+    let (formats_add, formats_gone) = (Rc::clone(&formats), formats);
     let levels_reg = Levels::clone(levels);
     let core_meter = core.clone();
     let (owned_reg, owned_cmd, owned_gone) =
@@ -214,6 +217,17 @@ fn run(
     let _listener = registry
         .add_listener_local()
         .global(move |global| {
+            // Every handle adopting a node needs, built once for both the
+            // device and the stream branch below.
+            let handles = Adopt {
+                registry: &registry_bind,
+                controls: &controls_add,
+                core: &core_meter,
+                meters: &attached_add,
+                levels: &levels_reg,
+                formats: &formats_add,
+                tx: &added,
+            };
             if let Some(device) = describe(global) {
                 if super::sinks::is_ours(&device.name) {
                     owned_reg.borrow_mut().insert(
@@ -224,28 +238,10 @@ fn run(
                         },
                     );
                 }
-                adopt(
-                    global,
-                    &device,
-                    &registry_bind,
-                    &controls_add,
-                    &core_meter,
-                    &attached_add,
-                    &levels_reg,
-                );
+                adopt(global, &device, &handles);
                 let _ = added.send(Event::Added(device));
             } else if let Some(stream) = describe_stream(global) {
-                adopt_stream(
-                    global,
-                    &stream,
-                    &Adopt {
-                        registry: &registry_bind,
-                        controls: &controls_add,
-                        core: &core_meter,
-                        meters: &attached_add,
-                        levels: &levels_reg,
-                    },
-                );
+                adopt_stream(global, &stream, &handles);
                 let _ = added_stream.send(Event::StreamAdded(stream));
             } else if let Some(link) = describe_link(global) {
                 let _ = added_stream.send(Event::LinkAdded(link));
@@ -271,6 +267,7 @@ fn run(
             // stream would outlive the node it was measuring.
             attached_gone.borrow_mut().remove(&id);
             controls_gone.borrow_mut().remove(&id);
+            formats_gone.borrow_mut().remove(&id);
             let _ = removed.send(Event::Removed(id));
         })
         .register();
@@ -451,6 +448,10 @@ fn write_controls(context: &CommandContext, node: u32, controls: Vec<(String, f3
     }
 }
 
+/// Info listeners for bound nodes, by node id. Held so the node keeps
+/// reporting its format; dropping one unsubscribes.
+type Formats = Rc<RefCell<HashMap<u32, pipewire::node::NodeListener>>>;
+
 /// Control writes waiting for their node to be bound, by node id.
 type Pending = HashMap<u32, Vec<(String, f32)>>;
 
@@ -569,6 +570,8 @@ struct Adopt<'a> {
     core: &'a pipewire::core::CoreRc,
     meters: &'a Rc<RefCell<HashMap<u32, Meter>>>,
     levels: &'a Levels,
+    formats: &'a Formats,
+    tx: &'a Sender<Event>,
 }
 
 fn adopt_stream(
@@ -582,6 +585,7 @@ fn adopt_stream(
         core,
         meters: meters_held,
         levels,
+        ..
     } = into;
     match registry.bind::<pipewire::node::Node, _>(global) {
         Ok(node) => {
@@ -619,19 +623,38 @@ fn adopt_stream(
 /// be driven, and attach a meter so its level can be read.
 ///
 /// Both are per-node resources held until the node goes away.
-#[allow(clippy::too_many_arguments)]
-fn adopt(
-    global: &pipewire::registry::GlobalObject<&DictRef>,
-    device: &Device,
-    registry: &pipewire::registry::RegistryRc,
-    controls: &Rc<RefCell<HashMap<u32, pipewire::node::Node>>>,
-    core: &pipewire::core::CoreRc,
-    meters_held: &Rc<RefCell<HashMap<u32, Meter>>>,
-    levels: &Levels,
-) {
+fn adopt(global: &pipewire::registry::GlobalObject<&DictRef>, device: &Device, into: &Adopt<'_>) {
+    let Adopt {
+        registry,
+        controls,
+        core,
+        meters: meters_held,
+        levels,
+        formats,
+        tx,
+    } = into;
     let id = device.id;
     if let Ok(node) = registry.bind::<pipewire::node::Node, _>(global) {
+        // The node's own info carries what the registry announcement does
+        // not: the channel count and the rate. The listener is kept in the
+        // same map as the proxy, since both live exactly as long as the
+        // node does.
+        // Cloned through the reference: `tx` is borrowed from `Adopt`, and
+        // the info closure has to own its sender.
+        let report = Sender::clone(tx);
+        let listener = node
+            .add_listener_local()
+            .info(move |info| {
+                let props = info.props();
+                let _ = report.send(Event::Format {
+                    id,
+                    rate: props.and_then(node_rate),
+                    channels: props.and_then(node_channels),
+                });
+            })
+            .register();
         controls.borrow_mut().insert(id, node);
+        formats.borrow_mut().insert(id, listener);
     }
 
     // Our own filter chains are plumbing, not strips: nothing shows their

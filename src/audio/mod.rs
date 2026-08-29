@@ -102,6 +102,17 @@ pub enum Event {
     StreamAdded(Stream),
     LinkAdded(LinkInfo),
     Removed(u32),
+    /// A node's format, once its proxy has reported it.
+    ///
+    /// Its own event because the registry announcement carries neither the
+    /// channel count nor the rate: those are on the node's info, which
+    /// arrives only after binding. Without it every device in the settings
+    /// window lists a dash where its rate and channels should be.
+    Format {
+        id: u32,
+        rate: Option<u32>,
+        channels: Option<u32>,
+    },
     /// The first registry sweep has finished, so everything that already
     /// existed has been reported. Nothing may be created before this: a
     /// sink made while the sweep is still running cannot see the lingering
@@ -225,6 +236,18 @@ impl Backend {
                 Ok(Event::LinkAdded(link)) => {
                     if !self.links.iter().any(|l| l.id == link.id) {
                         self.links.push(link);
+                    }
+                }
+                Ok(Event::Format { id, rate, channels }) => {
+                    // Filled in rather than replacing the device: the
+                    // registry told us everything else about it already.
+                    if let Some(device) = self.devices.iter_mut().find(|d| d.id == id) {
+                        if rate.is_some() {
+                            device.rate = rate;
+                        }
+                        if channels.is_some() {
+                            device.channels = channels;
+                        }
                     }
                 }
                 Ok(Event::Removed(id)) => {
