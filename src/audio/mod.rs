@@ -19,7 +19,6 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 pub use links::End;
 // Re-exported for the FX sends, which route a specific pair rather than a
 // node's main output. Nothing calls it yet; see the FX section of TODO.md.
-#[allow(unused_imports)]
 pub use links::{Route, Tap};
 pub use nodes::{Command, Device, Direction, LinkInfo, Stream};
 

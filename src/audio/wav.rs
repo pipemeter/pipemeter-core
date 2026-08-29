@@ -95,7 +95,6 @@ impl Writer {
     ///
     /// Used by the tests rather than by the recorder, which reads the frame
     /// count directly and converts once for display.
-    #[allow(dead_code)]
     #[must_use]
     pub fn duration(&self) -> std::time::Duration {
         if self.rate == 0 {

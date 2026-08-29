@@ -59,7 +59,6 @@
 //
 // Unlike the FX sends this replaces, none of it can misbehave in the
 // meantime - it builds a string nobody runs.
-#![allow(dead_code)]
 
 use std::fmt::Write as _;
 use std::io;
