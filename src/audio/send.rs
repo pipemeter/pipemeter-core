@@ -15,6 +15,11 @@
 //! They are created when a level first becomes audible and dropped when
 //! it returns to zero, because eight strips into four effects would
 //! otherwise be thirty-two helpers running to carry silence.
+//!
+//! Neither end is passive. A passive node only follows, and a path made
+//! entirely of followers - strip chain, send, effect, return, bus - has
+//! nothing to schedule it. The return in particular has to *pull* the
+//! effect, or the effect sits suspended and the whole path is silent.
 
 use std::io;
 
@@ -69,14 +74,14 @@ context.modules = [
         node.name = \"input.{name}\"
         audio.channels = 2
         audio.position = [ FL FR ]
-        node.passive = true
+        node.passive = false
         node.autoconnect = false
       }}
       playback.props = {{
         node.name = \"output.{name}\"
         audio.channels = 2
         audio.position = [ FL FR ]
-        node.passive = true
+        node.passive = false
         node.autoconnect = false
       }}
     }}
