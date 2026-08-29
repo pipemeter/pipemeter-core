@@ -182,20 +182,20 @@ fn run(
     // registry id alone is not enough: params go through a proxy.
     let controls: Rc<RefCell<HashMap<u32, pipewire::node::Node>>> =
         Rc::new(RefCell::new(HashMap::new()));
-    let controls_add = Rc::clone(&controls);
-    let controls_gone = Rc::clone(&controls);
-    let controls_cmd = Rc::clone(&controls);
+    let (controls_add, controls_gone, controls_cmd) = (
+        Rc::clone(&controls),
+        Rc::clone(&controls),
+        Rc::clone(&controls),
+    );
     let registry_bind = registry.clone();
 
     // One capture stream per metered node, held for as long as the node is.
     let attached: Rc<RefCell<HashMap<u32, Meter>>> = Rc::new(RefCell::new(HashMap::new()));
-    let attached_add = Rc::clone(&attached);
-    let attached_gone = Rc::clone(&attached);
+    let (attached_add, attached_gone) = (Rc::clone(&attached), Rc::clone(&attached));
     let levels_reg = Levels::clone(levels);
     let core_meter = core.clone();
-    let owned_reg = Rc::clone(&owned);
-    let owned_cmd = Rc::clone(&owned);
-    let owned_gone = Rc::clone(&owned);
+    let (owned_reg, owned_cmd, owned_gone) =
+        (Rc::clone(&owned), Rc::clone(&owned), Rc::clone(&owned));
     let registry_cmd = registry.clone();
 
     // Shared between the registry listener (which fills it) and the command
@@ -203,12 +203,10 @@ fn run(
     // RefCell is enough and no lock is needed.
     let router = Rc::new(RefCell::new(Router::default()));
 
-    let added = tx.clone();
-    let added_stream = tx.clone();
-    let removed = tx.clone();
-    let router_add = Rc::clone(&router);
+    // One per closure, since each is `move`.
+    let (added, added_stream, removed) = (tx.clone(), tx.clone(), tx.clone());
+    let (router_add, router_remove) = (Rc::clone(&router), Rc::clone(&router));
     let core_ports = core.clone();
-    let router_remove = Rc::clone(&router);
     let router_cmd = Rc::clone(&router);
     let core_cmd = core.clone();
 
@@ -279,15 +277,14 @@ fn run(
 
     // Everything the command handler needs, bundled so `run` does not end
     // up threading six clones through a closure inline.
-    let context = CommandContext {
-        router: router_cmd,
-        recorder: Rc::new(RefCell::new(Vec::new())),
-        core: core_cmd,
-        sinks: sinks_cmd,
-        owned: owned_cmd,
-        registry: registry_cmd,
-        controls: controls_cmd,
-    };
+    let context = CommandContext::new(
+        core_cmd,
+        registry_cmd,
+        router_cmd,
+        sinks_cmd,
+        owned_cmd,
+        controls_cmd,
+    );
     // Ask the server to tell us when it has finished replaying the registry.
     // Until that arrives, `owned` is incomplete, and creating sinks against
     // it would duplicate whatever a previous run left lingering.
@@ -377,7 +374,85 @@ struct CommandContext {
     owned: Rc<RefCell<HashMap<String, Owned>>>,
     registry: pipewire::registry::RegistryRc,
     controls: Rc<RefCell<HashMap<u32, pipewire::node::Node>>>,
+    /// Control writes for nodes that were not bound when they arrived.
+    ///
+    /// A filter chain that is not running yet has no proxy here, and the
+    /// write used to be dropped in silence. Held instead, and retried on
+    /// the next write, which is enough: the caller pushes controls
+    /// repeatedly, so a chain that comes up gets its levels on the next
+    /// pass rather than never.
+    pending: Rc<RefCell<Pending>>,
 }
+
+impl CommandContext {
+    /// The two fields nobody else shares - the takes in progress and the
+    /// held control writes - are made here rather than passed in, which is
+    /// also what keeps this to six arguments instead of eight.
+    fn new(
+        core: pipewire::core::CoreRc,
+        registry: pipewire::registry::RegistryRc,
+        router: Rc<RefCell<Router>>,
+        sinks: Rc<RefCell<Vec<pipewire::node::Node>>>,
+        owned: Rc<RefCell<HashMap<String, Owned>>>,
+        controls: Rc<RefCell<HashMap<u32, pipewire::node::Node>>>,
+    ) -> Self {
+        Self {
+            router,
+            recorder: Rc::new(RefCell::new(Vec::new())),
+            core,
+            sinks,
+            owned,
+            registry,
+            controls,
+            pending: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+}
+
+/// Send control values to a node, holding them if it is not bound yet.
+///
+/// A filter chain that has not started has no proxy, and a write to it used
+/// to vanish. Holding and retrying on the next write is enough in practice:
+/// callers push controls repeatedly, so a chain that comes up late gets its
+/// levels on the following pass rather than never.
+fn write_controls(context: &CommandContext, node: u32, controls: Vec<(String, f32)>) {
+    // Anything held from an earlier write goes out first, so the
+    // order the caller sent them in survives.
+    let held: Vec<(u32, Vec<(String, f32)>)> = {
+        let mut pending = context.pending.borrow_mut();
+        let bound = context.controls.borrow();
+        let ready: Vec<u32> = pending
+            .keys()
+            .copied()
+            .filter(|id| bound.contains_key(id))
+            .collect();
+        ready
+            .into_iter()
+            .filter_map(|id| pending.remove(&id).map(|values| (id, values)))
+            .collect()
+    };
+    for (id, values) in held {
+        if let Some(proxy) = context.controls.borrow().get(&id) {
+            log::debug!("applying {} held control(s) to node {id}", values.len());
+            set_controls(proxy, &values);
+        }
+    }
+
+    let bound = context.controls.borrow().get(&node).is_some();
+    if bound {
+        if let Some(proxy) = context.controls.borrow().get(&node) {
+            set_controls(proxy, &controls);
+        }
+    } else {
+        // Replaced rather than appended: a later write for the same
+        // node is the newer truth, and queueing both would push a
+        // stale level out first.
+        context.pending.borrow_mut().insert(node, controls);
+    }
+}
+
+/// Control writes waiting for their node to be bound, by node id.
+type Pending = HashMap<u32, Vec<(String, f32)>>;
 
 /// Apply one command from the UI.
 fn handle(context: &CommandContext, command: Command) {
@@ -458,11 +533,7 @@ fn handle(context: &CommandContext, command: Command) {
                 .collect();
             *context.recorder.borrow_mut() = started;
         }
-        Command::SetControls { node, controls } => {
-            if let Some(proxy) = context.controls.borrow().get(&node) {
-                set_controls(proxy, &controls);
-            }
-        }
+        Command::SetControls { node, controls } => write_controls(context, node, controls),
         Command::SetVolume {
             node,
             amplitude,
