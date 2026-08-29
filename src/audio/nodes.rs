@@ -9,7 +9,7 @@ use std::thread;
 use pipewire::spa::utils::dict::DictRef;
 
 use super::Event;
-use super::links::{Port, PortDirection, Router};
+use super::links::Router;
 use super::meters::{self, Meter};
 
 /// Shared peak levels, re-exported so `Backend` can name the type.
@@ -211,7 +211,7 @@ fn run(
                 formats: &formats_add,
                 tx: &added,
             };
-            if let Some(device) = describe(global) {
+            if let Some(device) = super::describe::describe(global) {
                 if super::sinks::is_ours(&device.name) {
                     owned_reg.borrow_mut().insert(
                         device.name.clone(),
@@ -223,12 +223,12 @@ fn run(
                 }
                 adopt(global, &device, &handles);
                 let _ = added.send(Event::Added(device));
-            } else if let Some(stream) = describe_stream(global) {
+            } else if let Some(stream) = super::describe::describe_stream(global) {
                 adopt_stream(global, &stream, &handles);
                 let _ = added_stream.send(Event::StreamAdded(stream));
-            } else if let Some(link) = describe_link(global) {
+            } else if let Some(link) = super::describe::describe_link(global) {
                 let _ = added_stream.send(Event::LinkAdded(link));
-            } else if let Some(port) = describe_port(global) {
+            } else if let Some(port) = super::describe::describe_port(global) {
                 let mut router = router_add.borrow_mut();
                 router.add_port(port);
                 router.retry_pending(&core_ports);
@@ -575,8 +575,8 @@ fn adopt(global: &pipewire::registry::GlobalObject<&DictRef>, device: &Device, i
                 let props = info.props();
                 let _ = report.send(Event::Format {
                     id,
-                    rate: props.and_then(node_rate),
-                    channels: props.and_then(node_channels),
+                    rate: props.and_then(super::describe::node_rate),
+                    channels: props.and_then(super::describe::node_channels),
                 });
             })
             .register();
@@ -680,130 +680,4 @@ fn send_props(node: &pipewire::node::Node, object: &pipewire::spa::pod::Object) 
     if let Some(pod) = pipewire::spa::pod::Pod::from_bytes(&bytes) {
         node.set_param(pipewire::spa::param::ParamType::Props, 0, pod);
     }
-}
-
-/// Turn a registry global into a [`Device`], or `None` if it is not an audio
-/// node we care about. Everything `PipeWire` exposes comes through here —
-/// devices, ports, links, factories — so the filtering matters.
-/// A node's sample rate.
-///
-/// Most device nodes do not publish `audio.rate`; the rate they are running
-/// at is in `clock.rate`, and ALSA nodes carry it as a fraction in
-/// `node.rate` such as `1/48000`. Reading only the first left every row of
-/// the settings window showing a dash.
-fn node_rate(props: &DictRef) -> Option<u32> {
-    if let Some(rate) = props.get("audio.rate").and_then(|r| r.parse().ok()) {
-        return Some(rate);
-    }
-    if let Some(rate) = props.get("clock.rate").and_then(|r| r.parse().ok()) {
-        return Some(rate);
-    }
-    props
-        .get("node.rate")
-        .and_then(|r| r.split_once('/'))
-        .and_then(|(_, rate)| rate.parse().ok())
-}
-
-/// A node's channel count.
-///
-/// `audio.channels` when it is there, otherwise counted from the channel
-/// map in `audio.position`, which reads like `FL,FR`.
-fn node_channels(props: &DictRef) -> Option<u32> {
-    if let Some(channels) = props.get("audio.channels").and_then(|c| c.parse().ok()) {
-        return Some(channels);
-    }
-    let position = props.get("audio.position")?;
-    let count = position
-        .split(',')
-        .filter(|part| !part.trim().is_empty())
-        .count();
-    u32::try_from(count).ok().filter(|count| *count > 0)
-}
-
-fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Device> {
-    let props = global.props?;
-    let class = props.get("media.class")?;
-    let ours = props.get("node.name").is_some_and(super::eq::is_chain_node);
-    let direction = match class {
-        "Audio/Sink" => Direction::Sink,
-        "Audio/Source" => Direction::Source,
-        "Stream/Input/Audio" if ours => Direction::Sink,
-        "Stream/Output/Audio" if ours => Direction::Source,
-        _ => return None,
-    };
-
-    let name = props.get("node.name")?.to_owned();
-    let description = props
-        .get("node.description")
-        .or_else(|| props.get("node.nick"))
-        .unwrap_or(&name)
-        .to_owned();
-
-    Some(Device {
-        id: global.id,
-        name,
-        description,
-        direction,
-        class: class.to_owned(),
-        rate: node_rate(props),
-        channels: node_channels(props),
-        assignable: !ours,
-    })
-}
-
-/// Turn a registry global into a [`Stream`], or `None` if it is not an
-/// application playing audio.
-fn describe_stream(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Stream> {
-    let props = global.props?;
-    if props
-        .get("node.name")
-        .is_some_and(|n| n.contains("pipemeter"))
-    {
-        return None;
-    }
-    if props.get("media.class")? != "Stream/Output/Audio" {
-        return None;
-    }
-    let name = props
-        .get("application.name")
-        .or_else(|| props.get("node.description"))
-        .or_else(|| props.get("node.name"))?
-        .to_owned();
-    Some(Stream {
-        id: global.id,
-        name,
-        node_name: props.get("node.name").unwrap_or_default().to_owned(),
-    })
-}
-
-/// Turn a registry global into a [`LinkInfo`], or `None` if it is not a link.
-fn describe_link(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<LinkInfo> {
-    let props = global.props?;
-    Some(LinkInfo {
-        id: global.id,
-        output_node: props.get("link.output.node")?.parse().ok()?,
-        input_node: props.get("link.input.node")?.parse().ok()?,
-    })
-}
-
-/// Turn a registry global into a [`Port`], or `None` if it is not one.
-fn describe_port(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Port> {
-    let props = global.props?;
-    let direction = match props.get("port.direction")? {
-        "in" => PortDirection::In,
-        "out" => PortDirection::Out,
-        _ => return None,
-    };
-    let node_id = props.get("node.id")?.parse().ok()?;
-
-    Some(Port {
-        id: global.id,
-        node_id,
-        slot: props
-            .get("port.id")
-            .and_then(|i| i.parse().ok())
-            .unwrap_or(0),
-        channel: props.get("audio.channel").unwrap_or_default().to_owned(),
-        direction,
-    })
 }
