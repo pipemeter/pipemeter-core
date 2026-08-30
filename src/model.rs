@@ -24,13 +24,30 @@ pub enum Mode {
     RearOnly,
 }
 
-/// Every mode, in the order the remote API numbers them.
+/// Every mode, in the exact index order the Remote API and XML settings use.
 ///
-/// Not a guess: the API lists exactly these twelve in this order, and the
-/// indicator grid on the button is twelve cells lighting the one at the
-/// mode's own index — which is how the two were checked against each other.
-/// `BusMode` in a settings file is an index into this.
+/// Version 1 (Standard): Normal=0, Amix=1, Repeat=2, Composite=3
+/// Version 2 (Banana/Potato): Bmix=4, TvMix=5, UpMix21=6, UpMix41=7, UpMix61=8,
+/// CenterOnly=9, LfeOnly=10, RearOnly=11.
 pub const MODES: [Mode; 12] = [
+    Mode::Normal,     // 0
+    Mode::Amix,       // 1
+    Mode::Repeat,     // 2 (Stereo Repeat)
+    Mode::Composite,  // 3
+    Mode::Bmix,       // 4
+    Mode::TvMix,      // 5
+    Mode::UpMix21,    // 6
+    Mode::UpMix41,    // 7
+    Mode::UpMix61,    // 8
+    Mode::CenterOnly, // 9
+    Mode::LfeOnly,    // 10
+    Mode::RearOnly,   // 11
+];
+
+/// The visual cycle and indicator dot order in the GUI:
+/// Top row: Normal, Mixdown A, Mixdown B, Stereo Repeat, Composite, Up Mix TV
+/// Bottom row: Up Mix 2.1, Up Mix 4.1, Up Mix 6.1, Center Only, LFE Only, Rear Only
+pub const UI_CYCLE: [Mode; 12] = [
     Mode::Normal,
     Mode::Amix,
     Mode::Bmix,
@@ -46,22 +63,26 @@ pub const MODES: [Mode; 12] = [
 ];
 
 impl Mode {
-    /// The next mode round, which is what clicking the button does.
-    ///
-    /// Cycling order is the order of `MODES`, so it matches the grid of
-    /// dots the button draws and a settings file's numbering.
+    /// The next mode when clicking the mode cycle button in the UI.
     #[must_use]
     pub fn next(self) -> Self {
-        MODES[(self.index() as usize + 1) % MODES.len()]
+        let pos = UI_CYCLE.iter().position(|m| *m == self).unwrap_or(0);
+        UI_CYCLE[(pos + 1) % UI_CYCLE.len()]
+    }
+
+    /// The 0-based dot position (0..12) in the 2x6 UI indicator grid.
+    #[must_use]
+    pub fn dot_index(self) -> usize {
+        UI_CYCLE.iter().position(|m| *m == self).unwrap_or(0)
     }
 
     pub fn remote_name(self) -> &'static str {
         match self {
             Self::Normal => "normal",
             Self::Amix => "amix",
-            Self::Bmix => "bmix",
             Self::Repeat => "repeat",
             Self::Composite => "composite",
+            Self::Bmix => "bmix",
             Self::TvMix => "tvmix",
             Self::UpMix21 => "upmix21",
             Self::UpMix41 => "upmix41",

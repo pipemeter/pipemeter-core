@@ -38,6 +38,14 @@ const BEXT_LEN: u32 = 602;
 /// `RF64`'s size chunk: three 64-bit lengths and an empty table.
 const DS64_LEN: u32 = 28;
 
+/// Everything before the samples in an AIFF: FORM, COMM and SSND.
+const AIFF_HEADER_LEN: u32 = 54;
+/// Where AIFF keeps the numbers that grow: the FORM length, the frame
+/// count inside COMM, and the SSND length.
+const AIFF_FORM_SIZE_AT: u64 = 4;
+const AIFF_FRAMES_AT: u64 = 22;
+const AIFF_SSND_SIZE_AT: u64 = 42;
+
 /// Which container the samples are wrapped in.
 ///
 /// All three hold the same PCM in the same order and differ only in what
@@ -49,9 +57,14 @@ pub enum Container {
     /// Plain RIFF/WAVE. Read by everything, and capped at 4 GB.
     #[default]
     Wav,
+    /// Apple's interchange format. Big-endian, and a different set of
+    /// chunks, but the same samples underneath.
+    Aiff,
     /// RIFF/WAVE carrying a Broadcast Wave description chunk.
     Bwf,
-    /// The 64-bit RIFF, for takes that outgrow a WAV.
+    /// The 64-bit RIFF, for takes that outgrow a WAV. Ours, not the
+    /// original's - it is the only one of these that solves a problem a
+    /// long recording actually runs into.
     Rf64,
 }
 
@@ -64,7 +77,17 @@ impl Container {
             // files, and a player that does not know the extra chunks
             // skips them.
             Self::Wav | Self::Bwf | Self::Rf64 => "wav",
+            Self::Aiff => "aiff",
         }
+    }
+
+    /// Whether samples are stored the other way round.
+    ///
+    /// AIFF is big-endian and always signed; the RIFF family is
+    /// little-endian and stores 8-bit unsigned. Nothing else differs about
+    /// the samples themselves.
+    fn big_endian(self) -> bool {
+        self == Self::Aiff
     }
 
     /// How the Recorder Options window names it.
@@ -72,6 +95,7 @@ impl Container {
     pub fn caption(self) -> &'static str {
         match self {
             Self::Wav => "WAV",
+            Self::Aiff => "AIFF",
             Self::Bwf => "BWF",
             Self::Rf64 => "RF64",
         }
@@ -82,6 +106,7 @@ impl Container {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Wav => "wav",
+            Self::Aiff => "aiff",
             Self::Bwf => "bwf",
             Self::Rf64 => "rf64",
         }
@@ -92,6 +117,7 @@ impl Container {
     #[must_use]
     pub fn parse(text: &str) -> Self {
         match text {
+            "aiff" => Self::Aiff,
             "bwf" => Self::Bwf,
             "rf64" => Self::Rf64,
             _ => Self::Wav,
@@ -102,7 +128,8 @@ impl Container {
     #[must_use]
     pub fn next(self) -> Self {
         match self {
-            Self::Wav => Self::Bwf,
+            Self::Wav => Self::Aiff,
+            Self::Aiff => Self::Bwf,
             Self::Bwf => Self::Rf64,
             Self::Rf64 => Self::Wav,
         }
@@ -115,6 +142,7 @@ impl Container {
             // The extra chunk, plus its own name and length.
             Self::Bwf => HEADER_LEN + 8 + BEXT_LEN,
             Self::Rf64 => HEADER_LEN + 8 + DS64_LEN,
+            Self::Aiff => AIFF_HEADER_LEN,
         }
     }
 
@@ -215,11 +243,25 @@ impl Depth {
     /// more than full scale - a strip at +6 dB does - and wrapping would
     /// turn a loud passage into noise. Float keeps what it was given,
     /// which is the reason to choose it.
-    fn encode(self, sample: f32, into: &mut Vec<u8>) {
-        match self {
-            Self::Bits16 => into.extend_from_slice(&to_i16(sample).to_le_bytes()),
-            Self::Bits24 => into.extend_from_slice(&to_i24(sample)),
-            Self::Float32 => into.extend_from_slice(&sample.to_le_bytes()),
+    /// Encode one sample.
+    ///
+    /// The integer formats clip rather than wrap: a float buffer can carry
+    /// more than full scale - a strip at +6 dB does - and wrapping would
+    /// turn a loud passage into noise. Float keeps what it was given,
+    /// which is the reason to choose it.
+    fn encode(self, sample: f32, big_endian: bool, into: &mut Vec<u8>) {
+        if big_endian {
+            match self {
+                Self::Bits16 => into.extend_from_slice(&to_i16(sample).to_be_bytes()),
+                Self::Bits24 => into.extend_from_slice(&to_i24_be(sample)),
+                Self::Float32 => into.extend_from_slice(&sample.to_be_bytes()),
+            }
+        } else {
+            match self {
+                Self::Bits16 => into.extend_from_slice(&to_i16(sample).to_le_bytes()),
+                Self::Bits24 => into.extend_from_slice(&to_i24(sample)),
+                Self::Float32 => into.extend_from_slice(&sample.to_le_bytes()),
+            }
         }
     }
 }
@@ -272,8 +314,9 @@ impl Writer {
     /// Fails if the write fails.
     pub fn write(&mut self, samples: &[f32]) -> io::Result<()> {
         let mut bytes = Vec::with_capacity(samples.len() * self.depth.bytes() as usize);
+        let be = self.container.big_endian();
         for sample in samples {
-            self.depth.encode(*sample, &mut bytes);
+            self.depth.encode(*sample, be, &mut bytes);
         }
         self.file.write_all(&bytes)?;
         self.frames += samples.len() as u64 / u64::from(self.channels.max(1));
@@ -296,6 +339,23 @@ impl Writer {
             self.file.write_all(&(header + data - 8).to_le_bytes())?;
             self.file.write_all(&data.to_le_bytes())?;
             self.file.write_all(&self.frames.to_le_bytes())?;
+            self.file.seek(end)?;
+            return Ok(());
+        }
+
+        if self.container == Container::Aiff {
+            let data_u32 = u32::try_from(data).unwrap_or(u32::MAX);
+            let frames_u32 = u32::try_from(self.frames).unwrap_or(u32::MAX);
+            // FORM size (total file size minus 8: 4 bytes FORM id + 4 bytes size field)
+            self.file.seek(SeekFrom::Start(AIFF_FORM_SIZE_AT))?;
+            self.file
+                .write_all(&(data_u32 + AIFF_HEADER_LEN - 8).to_be_bytes())?;
+            // Number of sample frames in COMM chunk
+            self.file.seek(SeekFrom::Start(AIFF_FRAMES_AT))?;
+            self.file.write_all(&frames_u32.to_be_bytes())?;
+            // SSND chunk size (data length + 8 bytes offset & blockSize fields)
+            self.file.seek(SeekFrom::Start(AIFF_SSND_SIZE_AT))?;
+            self.file.write_all(&(data_u32 + 8).to_be_bytes())?;
             self.file.seek(end)?;
             return Ok(());
         }
@@ -347,6 +407,28 @@ fn write_header(
     depth: Depth,
     container: Container,
 ) -> io::Result<()> {
+    if container == Container::Aiff {
+        // AIFF Header: FORM (4 + 4 + 4) + COMM (4 + 4 + 18) + SSND (4 + 4 + 8) = 54 bytes
+        file.write_all(b"FORM")?;
+        file.write_all(&0u32.to_be_bytes())?; // patched in patch_lengths
+        file.write_all(b"AIFF")?;
+
+        // COMM chunk: size 18 (channels: 2, numSampleFrames: 4, sampleSize: 2, sampleRate: 10)
+        file.write_all(b"COMM")?;
+        file.write_all(&18u32.to_be_bytes())?;
+        file.write_all(&channels.to_be_bytes())?;
+        file.write_all(&0u32.to_be_bytes())?; // numSampleFrames (patched later)
+        file.write_all(&depth.bits().to_be_bytes())?;
+        file.write_all(&ieee754_extended_80(rate))?;
+
+        // SSND chunk: size = data + 8 (patched in patch_lengths), offset = 0, blockSize = 0
+        file.write_all(b"SSND")?;
+        file.write_all(&8u32.to_be_bytes())?;
+        file.write_all(&0u32.to_be_bytes())?; // offset
+        file.write_all(&0u32.to_be_bytes())?; // blockSize
+        return Ok(());
+    }
+
     let bytes_per_frame = u32::from(channels) * depth.bytes();
     match container {
         Container::Wav | Container::Bwf => {
@@ -358,6 +440,7 @@ fn write_header(
             file.write_all(b"RF64")?;
             file.write_all(&u32::MAX.to_le_bytes())?;
         }
+        Container::Aiff => unreachable!(),
     }
     file.write_all(b"WAVE")?;
     match container {
@@ -376,6 +459,7 @@ fn write_header(
             file.write_all(&0u64.to_le_bytes())?;
             file.write_all(&0u32.to_le_bytes())?;
         }
+        Container::Aiff => unreachable!(),
     }
     file.write_all(b"fmt ")?;
     file.write_all(&16u32.to_le_bytes())?;
@@ -389,7 +473,41 @@ fn write_header(
     match container {
         Container::Wav | Container::Bwf => file.write_all(&0u32.to_le_bytes()),
         Container::Rf64 => file.write_all(&u32::MAX.to_le_bytes()),
+        Container::Aiff => unreachable!(),
     }
+}
+
+/// Convert sample rate `u32` to IEEE 754 80-bit extended precision float (Big-Endian).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn ieee754_extended_80(rate: u32) -> [u8; 10] {
+    if rate == 0 {
+        return [0u8; 10];
+    }
+    let mut f = f64::from(rate);
+    let mut exp: i32 = 0;
+    while f >= 2.0 {
+        f /= 2.0;
+        exp += 1;
+    }
+    while f < 1.0 && f > 0.0 {
+        f *= 2.0;
+        exp -= 1;
+    }
+    let exponent = u16::try_from(exp + 16383).unwrap_or(0).to_be_bytes();
+    let mantissa = (f * 9_223_372_036_854_775_808.0) as u64;
+    let mantissa_bytes = mantissa.to_be_bytes();
+    [
+        exponent[0],
+        exponent[1],
+        mantissa_bytes[0],
+        mantissa_bytes[1],
+        mantissa_bytes[2],
+        mantissa_bytes[3],
+        mantissa_bytes[4],
+        mantissa_bytes[5],
+        mantissa_bytes[6],
+        mantissa_bytes[7],
+    ]
 }
 
 /// Convert one sample, clipping rather than wrapping.
@@ -407,6 +525,14 @@ fn to_i24(sample: f32) -> [u8; 3] {
     let value = (clamped * 8_388_607.0) as i32;
     let [a, b, c, _] = value.to_le_bytes();
     [a, b, c]
+}
+
+/// The same, three bytes wide and big-endian.
+fn to_i24_be(sample: f32) -> [u8; 3] {
+    let clamped = sample.clamp(-1.0, 1.0);
+    let value = (clamped * 8_388_607.0) as i32;
+    let [_, b, c, d] = value.to_be_bytes();
+    [b, c, d]
 }
 
 #[cfg(test)]
@@ -437,7 +563,8 @@ mod tests {
             (Depth::Float32, 3, 32, 4),
         ] {
             let path = std::env::temp_dir().join(format!("pipemeter-wav-{}.wav", depth.as_str()));
-            let mut writer = Writer::create(&path, 48_000, 2, depth, Container::Wav).expect("creates");
+            let mut writer =
+                Writer::create(&path, 48_000, 2, depth, Container::Wav).expect("creates");
             writer.write(&[0.5, -0.5]).expect("writes");
             writer.finish().expect("finishes");
 
@@ -472,7 +599,8 @@ mod tests {
     #[test]
     fn float_keeps_what_is_past_full_scale() {
         let path = std::env::temp_dir().join("pipemeter-wav-float-hot.wav");
-        let mut writer = Writer::create(&path, 48_000, 1, Depth::Float32, Container::Wav).expect("creates");
+        let mut writer =
+            Writer::create(&path, 48_000, 1, Depth::Float32, Container::Wav).expect("creates");
         writer.write(&[2.5]).expect("writes");
         writer.finish().expect("finishes");
 
@@ -560,13 +688,21 @@ mod tests {
         let frames = u64::from_le_bytes(b[36..44].try_into().unwrap());
         assert_eq!(data, 32, "16 samples of 2 bytes");
         assert_eq!(frames, 8, "two channels");
-        assert_eq!(b.len() as u64, u64::from(Container::Rf64.header_len()) + data);
+        assert_eq!(
+            b.len() as u64,
+            u64::from(Container::Rf64.header_len()) + data
+        );
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn container_spellings_round_trip() {
-        for container in [Container::Wav, Container::Bwf, Container::Rf64] {
+        for container in [
+            Container::Wav,
+            Container::Aiff,
+            Container::Bwf,
+            Container::Rf64,
+        ] {
             assert_eq!(Container::parse(container.as_str()), container);
         }
         assert_eq!(Container::parse("nonsense"), Container::Wav);
@@ -575,16 +711,44 @@ mod tests {
     #[test]
     fn cycling_the_container_comes_back_round() {
         let mut at = Container::Wav;
-        for _ in 0..3 {
+        for _ in 0..4 {
             at = at.next();
         }
         assert_eq!(at, Container::Wav);
     }
 
     #[test]
+    fn aiff_writes_form_comm_and_ssnd_chunks() {
+        let path = std::env::temp_dir().join("pipemeter-aiff-test.aiff");
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Aiff).expect("creates");
+        writer.write(&[0.5, -0.5]).expect("writes");
+        writer.finish().expect("finishes");
+
+        let b = std::fs::read(&path).expect("reads back");
+        assert_eq!(&b[0..4], b"FORM");
+        assert_eq!(&b[8..12], b"AIFF");
+        assert_eq!(&b[12..16], b"COMM");
+        let comm_len = u32::from_be_bytes(b[16..20].try_into().unwrap());
+        assert_eq!(comm_len, 18);
+        let channels = u16::from_be_bytes(b[20..22].try_into().unwrap());
+        assert_eq!(channels, 2);
+        let frames = u32::from_be_bytes(b[22..26].try_into().unwrap());
+        assert_eq!(frames, 1);
+        let sample_size = u16::from_be_bytes(b[26..28].try_into().unwrap());
+        assert_eq!(sample_size, 16);
+        assert_eq!(&b[38..42], b"SSND");
+        let ssnd_len = u32::from_be_bytes(b[42..46].try_into().unwrap());
+        assert_eq!(ssnd_len, 12); // 4 bytes audio + 8 bytes offset/blockSize
+        assert_eq!(b.len() as u32, super::AIFF_HEADER_LEN + 4);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn a_finished_file_declares_its_own_length() {
         let path = std::env::temp_dir().join("pipemeter-wav-test.wav");
-        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer
             .write(&[0.0, 0.0, 1.0, -1.0, 0.5, 0.5, 0.0, 0.0])
             .expect("writes");
@@ -608,7 +772,8 @@ mod tests {
     #[test]
     fn an_unfinished_file_still_declares_what_it_holds() {
         let path = std::env::temp_dir().join("pipemeter-wav-abandoned.wav");
-        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer.write(&[0.25; 64]).expect("writes");
         drop(writer);
 
@@ -622,7 +787,8 @@ mod tests {
     #[test]
     fn writing_after_a_patch_does_not_land_in_the_header() {
         let path = std::env::temp_dir().join("pipemeter-wav-seek.wav");
-        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer.write(&[0.5; 4]).expect("first");
         writer.write(&[0.5; 4]).expect("second");
         writer.finish().expect("finishes");
@@ -637,7 +803,8 @@ mod tests {
     #[test]
     fn the_duration_follows_the_frames_written() {
         let path = std::env::temp_dir().join("pipemeter-wav-duration.wav");
-        let mut writer = Writer::create(&path, 8, 2, Depth::Bits16, Container::Wav).expect("creates");
+        let mut writer =
+            Writer::create(&path, 8, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer.write(&[0.0; 32]).expect("writes");
         assert_eq!(writer.duration().as_secs(), 2);
         writer.finish().expect("finishes");

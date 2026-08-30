@@ -29,7 +29,6 @@ pub fn now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-
 /// A device the mixer knows of, present or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Known {
@@ -216,14 +215,24 @@ mod tests {
 
     fn populated() -> Registry {
         let mut registry = Registry::default();
-        registry.remember("alsa_output.hdmi", "HDMI Audio", Direction::Sink, Kind::Physical);
+        registry.remember(
+            "alsa_output.hdmi",
+            "HDMI Audio",
+            Direction::Sink,
+            Kind::Physical,
+        );
         registry.remember(
             "alsa_input.mic",
             "Headset Microphone",
             Direction::Source,
             Kind::Physical,
         );
-        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink, Kind::Physical);
+        registry.remember(
+            "bluez.headset",
+            "WH-1000XM4",
+            Direction::Sink,
+            Kind::Physical,
+        );
         registry
     }
 
@@ -243,7 +252,12 @@ mod tests {
     fn it_comes_back_present_when_it_comes_back() {
         let mut registry = populated();
         registry.mark_all_absent();
-        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink, Kind::Physical);
+        registry.remember(
+            "bluez.headset",
+            "WH-1000XM4",
+            Direction::Sink,
+            Kind::Physical,
+        );
         assert!(registry.is_present("bluez.headset"));
     }
 
@@ -251,7 +265,12 @@ mod tests {
     fn the_present_ones_are_listed_first() {
         let mut registry = populated();
         registry.mark_all_absent();
-        registry.remember("bluez.headset", "WH-1000XM4", Direction::Sink, Kind::Physical);
+        registry.remember(
+            "bluez.headset",
+            "WH-1000XM4",
+            Direction::Sink,
+            Kind::Physical,
+        );
         let sinks = registry.of(Direction::Sink);
         assert_eq!(sinks[0].name, "bluez.headset", "the plugged-in one leads");
         assert!(!sinks[1].present);
@@ -329,8 +348,17 @@ mod tests {
     #[test]
     fn a_sighting_is_stamped() {
         let mut registry = Registry::default();
-        registry.remember_absent("x", "X", Direction::Sink, Kind::Virtual, Some(1_700_000_000));
-        assert_eq!(registry.of(Direction::Sink)[0].last_seen, Some(1_700_000_000));
+        registry.remember_absent(
+            "x",
+            "X",
+            Direction::Sink,
+            Kind::Virtual,
+            Some(1_700_000_000),
+        );
+        assert_eq!(
+            registry.of(Direction::Sink)[0].last_seen,
+            Some(1_700_000_000)
+        );
         registry.remember("x", "X", Direction::Sink, Kind::Virtual);
         let moved = registry.of(Direction::Sink)[0].last_seen.expect("stamped");
         assert!(moved > 1_700_000_000, "a live sighting should be recent");
@@ -346,7 +374,12 @@ mod tests {
     fn forgetting_the_absent_spares_what_is_plugged_in() {
         let mut registry = populated();
         registry.mark_all_absent();
-        registry.remember("alsa_output.hdmi", "HDMI Audio", Direction::Sink, Kind::Physical);
+        registry.remember(
+            "alsa_output.hdmi",
+            "HDMI Audio",
+            Direction::Sink,
+            Kind::Physical,
+        );
         assert_eq!(registry.forget_absent(), 2);
         assert_eq!(registry.len(), 1);
         assert!(registry.is_present("alsa_output.hdmi"));
