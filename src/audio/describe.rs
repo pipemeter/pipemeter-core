@@ -8,7 +8,7 @@
 use pipewire::spa::utils::dict::DictRef;
 
 use super::links::{Port, PortDirection};
-use super::nodes::{Device, Direction, LinkInfo, Stream};
+use super::nodes::{Device, Direction, Kind, LinkInfo, Stream};
 
 /// Turn a registry global into a [`Device`], or `None` if it is not an audio
 /// node we care about. Everything `PipeWire` exposes comes through here —
@@ -48,6 +48,29 @@ pub(super) fn node_channels(props: &DictRef) -> Option<u32> {
     u32::try_from(count).ok().filter(|count| *count > 0)
 }
 
+/// Whether a node has a card behind it.
+///
+/// `device.api` is the plain answer and is not always to hand: the
+/// registry hands out a subset of a node's properties, and that key is not
+/// in it. `device.id` is, and means the same thing - a node backed by a
+/// Device object is a real one, while a null sink or a loopback has
+/// neither key.
+///
+/// The bound node's `info` is *not* a better source, despite carrying the
+/// full properties in `pw-dump`: `PipeWire` only fills them in when they
+/// change, so the first info arrives with an empty dictionary. Reading the
+/// kind from there classified every device on the machine as virtual by
+/// overwriting the right answer with a guess made from nothing.
+pub(super) fn node_kind(props: &DictRef) -> Kind {
+    if props.get("device.api").is_some_and(|api| !api.is_empty()) {
+        return Kind::Physical;
+    }
+    if props.get("device.id").is_some() {
+        return Kind::Physical;
+    }
+    Kind::Virtual
+}
+
 pub(super) fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> Option<Device> {
     let props = global.props?;
     let class = props.get("media.class")?;
@@ -76,7 +99,7 @@ pub(super) fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> O
         rate: node_rate(props),
         channels: node_channels(props),
         assignable: !ours,
-        kind: super::Kind::of(props.get("device.api")),
+        kind: node_kind(props),
     })
 }
 

@@ -111,6 +111,7 @@ pub enum Event {
         rate: Option<u32>,
         channels: Option<u32>,
     },
+
     /// The first registry sweep has finished, so everything that already
     /// existed has been reported. Nothing may be created before this: a
     /// sink made while the sweep is still running cannot see the lingering
