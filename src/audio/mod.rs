@@ -489,7 +489,12 @@ impl Backend {
     }
 
     /// Start recording a node to a file. `None` stops whatever is running.
-    pub fn record(&self, takes: &[(String, std::path::PathBuf)], rate: u32) -> bool {
+    pub fn record(
+        &self,
+        takes: &[(String, std::path::PathBuf)],
+        rate: u32,
+        depth: wav::Depth,
+    ) -> bool {
         let mut resolved = Vec::with_capacity(takes.len());
         for (name, path) in takes {
             // Looked up only to check it is there; the take targets it by
@@ -504,6 +509,7 @@ impl Backend {
             .send(Command::Record {
                 takes: resolved,
                 rate,
+                depth,
             })
             .is_ok()
     }

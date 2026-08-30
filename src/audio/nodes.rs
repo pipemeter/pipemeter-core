@@ -169,6 +169,8 @@ pub enum Command {
         /// stream records a header and no audio at all.
         takes: Vec<(String, std::path::PathBuf)>,
         rate: u32,
+        /// How samples are stored on disk.
+        depth: super::wav::Depth,
     },
     /// Set named controls on a filter-chain node.
     SetControls {
@@ -518,11 +520,13 @@ fn handle(context: &CommandContext, command: Command) {
         Command::RetryRoutes => {
             context.router.borrow_mut().retry_pending(&context.core);
         }
-        Command::Record { takes, rate } => {
+        Command::Record { takes, rate, depth } => {
             context.recorder.borrow_mut().clear();
             let started: Vec<_> = takes
                 .iter()
-                .filter_map(|(node, path)| super::recorder::start(&context.core, node, path, rate))
+                .filter_map(|(node, path)| {
+                    super::recorder::start(&context.core, node, path, rate, depth)
+                })
                 .collect();
             *context.recorder.borrow_mut() = started;
         }

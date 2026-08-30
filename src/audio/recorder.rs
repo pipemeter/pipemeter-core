@@ -78,10 +78,16 @@ impl Drop for Recorder {
 ///
 /// Returns `None` if the stream or the file could not be opened, which is
 /// not fatal: the deck reports that nothing is recording.
-pub fn start(core: &CoreRc, node: &str, path: &Path, rate: u32) -> Option<Recorder> {
+pub fn start(
+    core: &CoreRc,
+    node: &str,
+    path: &Path,
+    rate: u32,
+    depth: wav::Depth,
+) -> Option<Recorder> {
     const CHANNELS: u16 = 2;
 
-    let mut writer = wav::Writer::create(path, rate, CHANNELS)
+    let mut writer = wav::Writer::create(path, rate, CHANNELS, depth)
         .map_err(|err| log::warn!("could not record to {}: {err}", path.display()))
         .ok()?;
 
