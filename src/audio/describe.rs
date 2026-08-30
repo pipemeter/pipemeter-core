@@ -77,7 +77,7 @@ pub(super) fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> O
     let ours = props.get("node.name").is_some_and(super::eq::is_chain_node);
     let direction = match class {
         "Audio/Sink" => Direction::Sink,
-        "Audio/Source" => Direction::Source,
+        "Audio/Source" | "Audio/Source/Virtual" => Direction::Source,
         "Stream/Input/Audio" if ours => Direction::Sink,
         "Stream/Output/Audio" if ours => Direction::Source,
         _ => return None,

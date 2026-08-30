@@ -46,15 +46,9 @@ pub struct Spec {
 pub const CLASS_INPUT: &str = "Audio/Sink";
 /// Applications record from these.
 ///
-/// They are plain sinks, and what a capture application reads is the sink's
-/// monitor. Declaring them `Audio/Source/Virtual` puts them in the desktop's
-/// microphone list, which is where they belong and is what Voicemeeter does,
-/// but a node created that way through this factory carries no audio at all:
-/// playing into one and recording from it measures digital silence.
-///
-/// Discoverability is not worth silence, so they stay sinks until the
-/// virtual-source path is made to work. See TODO.md.
-pub const CLASS_BUS: &str = "Audio/Sink";
+/// Declared as `Audio/Source/Virtual` so the desktop and PipeWire/PulseAudio list them
+/// under Input Devices (Microphones), matching Voicemeeter behavior.
+pub const CLASS_BUS: &str = "Audio/Source/Virtual";
 
 /// Input-side virtual sinks: the three virtual strips. Apps select these as
 /// their output device, which is why the descriptions read like devices.
