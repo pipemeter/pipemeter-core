@@ -171,6 +171,8 @@ pub enum Command {
         rate: u32,
         /// How samples are stored on disk.
         depth: super::wav::Depth,
+        /// What they are wrapped in.
+        container: super::wav::Container,
     },
     /// Set named controls on a filter-chain node.
     SetControls {
@@ -520,12 +522,17 @@ fn handle(context: &CommandContext, command: Command) {
         Command::RetryRoutes => {
             context.router.borrow_mut().retry_pending(&context.core);
         }
-        Command::Record { takes, rate, depth } => {
+        Command::Record {
+            takes,
+            rate,
+            depth,
+            container,
+        } => {
             context.recorder.borrow_mut().clear();
             let started: Vec<_> = takes
                 .iter()
                 .filter_map(|(node, path)| {
-                    super::recorder::start(&context.core, node, path, rate, depth)
+                    super::recorder::start(&context.core, node, path, rate, depth, container)
                 })
                 .collect();
             *context.recorder.borrow_mut() = started;

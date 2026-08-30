@@ -495,6 +495,7 @@ impl Backend {
         takes: &[(String, std::path::PathBuf)],
         rate: u32,
         depth: wav::Depth,
+        container: wav::Container,
     ) -> bool {
         let mut resolved = Vec::with_capacity(takes.len());
         for (name, path) in takes {
@@ -511,6 +512,7 @@ impl Backend {
                 takes: resolved,
                 rate,
                 depth,
+                container,
             })
             .is_ok()
     }

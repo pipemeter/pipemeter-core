@@ -84,10 +84,11 @@ pub fn start(
     path: &Path,
     rate: u32,
     depth: wav::Depth,
+    container: wav::Container,
 ) -> Option<Recorder> {
     const CHANNELS: u16 = 2;
 
-    let mut writer = wav::Writer::create(path, rate, CHANNELS, depth)
+    let mut writer = wav::Writer::create(path, rate, CHANNELS, depth, container)
         .map_err(|err| log::warn!("could not record to {}: {err}", path.display()))
         .ok()?;
 

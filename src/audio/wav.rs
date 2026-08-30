@@ -24,11 +24,106 @@ use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
-/// Bytes into the file where each patched length sits.
+/// Bytes into the file where each patched length sits, for a plain WAV.
 const RIFF_SIZE_AT: u64 = 4;
-const DATA_SIZE_AT: u64 = 40;
-/// Everything before the samples.
+/// Everything before the samples, for a plain WAV.
 const HEADER_LEN: u32 = 44;
+
+/// A Broadcast Wave description chunk, which is a fixed 602 bytes before
+/// any coding history. We write it empty: the point of BWF here is that a
+/// program expecting one will open the file, not that we have anything to
+/// put in it.
+const BEXT_LEN: u32 = 602;
+
+/// `RF64`'s size chunk: three 64-bit lengths and an empty table.
+const DS64_LEN: u32 = 28;
+
+/// Which container the samples are wrapped in.
+///
+/// All three hold the same PCM in the same order and differ only in what
+/// is written before it, which is why they share a writer. What they are
+/// for differs: BWF is what a broadcast or post-production tool expects,
+/// and RF64 is the one that does not stop at four gigabytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Container {
+    /// Plain RIFF/WAVE. Read by everything, and capped at 4 GB.
+    #[default]
+    Wav,
+    /// RIFF/WAVE carrying a Broadcast Wave description chunk.
+    Bwf,
+    /// The 64-bit RIFF, for takes that outgrow a WAV.
+    Rf64,
+}
+
+impl Container {
+    /// The file extension, without the dot.
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            // BWF and RF64 are both `.wav` by convention: they are WAV
+            // files, and a player that does not know the extra chunks
+            // skips them.
+            Self::Wav | Self::Bwf | Self::Rf64 => "wav",
+        }
+    }
+
+    /// How the Recorder Options window names it.
+    #[must_use]
+    pub fn caption(self) -> &'static str {
+        match self {
+            Self::Wav => "WAV",
+            Self::Bwf => "BWF",
+            Self::Rf64 => "RF64",
+        }
+    }
+
+    /// How it is written to the settings file, and read back.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Bwf => "bwf",
+            Self::Rf64 => "rf64",
+        }
+    }
+
+    /// The other half of [`Container::as_str`]. Anything unrecognised is a
+    /// plain WAV, which every program can read.
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "bwf" => Self::Bwf,
+            "rf64" => Self::Rf64,
+            _ => Self::Wav,
+        }
+    }
+
+    /// The next one, for a box that cycles through them.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Wav => Self::Bwf,
+            Self::Bwf => Self::Rf64,
+            Self::Rf64 => Self::Wav,
+        }
+    }
+
+    /// Everything before the samples.
+    fn header_len(self) -> u32 {
+        match self {
+            Self::Wav => HEADER_LEN,
+            // The extra chunk, plus its own name and length.
+            Self::Bwf => HEADER_LEN + 8 + BEXT_LEN,
+            Self::Rf64 => HEADER_LEN + 8 + DS64_LEN,
+        }
+    }
+
+    /// Where the data length sits: the last field of the header, whatever
+    /// chunks came before it.
+    fn data_size_at(self) -> u64 {
+        u64::from(self.header_len()) - 4
+    }
+}
 
 /// How a sample is stored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -104,6 +199,16 @@ impl Depth {
         }
     }
 
+    /// The next one, for a box that cycles through them.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Bits16 => Self::Bits24,
+            Self::Bits24 => Self::Float32,
+            Self::Float32 => Self::Bits16,
+        }
+    }
+
     /// Encode one sample.
     ///
     /// The integer formats clip rather than wrap: a float buffer can carry
@@ -125,6 +230,7 @@ pub struct Writer {
     file: File,
     channels: u16,
     depth: Depth,
+    container: Container,
     /// Sample frames written so far, for the header and for the elapsed
     /// time the deck shows.
     frames: u64,
@@ -137,16 +243,23 @@ impl Writer {
     /// # Errors
     ///
     /// Fails if the file cannot be created or the header cannot be written.
-    pub fn create(path: &Path, rate: u32, channels: u16, depth: Depth) -> io::Result<Self> {
+    pub fn create(
+        path: &Path,
+        rate: u32,
+        channels: u16,
+        depth: Depth,
+        container: Container,
+    ) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let mut file = File::create(path)?;
-        write_header(&mut file, rate, channels, depth)?;
+        write_header(&mut file, rate, channels, depth, container)?;
         Ok(Self {
             file,
             channels,
             depth,
+            container,
             frames: 0,
             rate,
         })
@@ -167,17 +280,32 @@ impl Writer {
         self.patch_lengths()
     }
 
-    /// Bring the two header lengths up to date with what has been written.
+    /// Bring the header's lengths up to date with what has been written.
+    ///
+    /// `RF64` keeps its real lengths in the `ds64` chunk and leaves the
+    /// 32-bit ones reading -1 forever, which is the whole point of it: a
+    /// take longer than four gigabytes cannot say its own size in 32 bits.
     fn patch_lengths(&mut self) -> io::Result<()> {
-        let data = u32::try_from(
-            self.frames * u64::from(self.channels) * u64::from(self.depth.bytes()),
-        )
-        .unwrap_or(u32::MAX);
-        let end = SeekFrom::Start(u64::from(HEADER_LEN) + u64::from(data));
+        let header = u64::from(self.container.header_len());
+        let data = self.frames * u64::from(self.channels) * u64::from(self.depth.bytes());
+        let end = SeekFrom::Start(header + data);
+
+        if self.container == Container::Rf64 {
+            // riffSize, dataSize and sampleCount, in that order.
+            self.file.seek(SeekFrom::Start(20))?;
+            self.file.write_all(&(header + data - 8).to_le_bytes())?;
+            self.file.write_all(&data.to_le_bytes())?;
+            self.file.write_all(&self.frames.to_le_bytes())?;
+            self.file.seek(end)?;
+            return Ok(());
+        }
+
+        let data = u32::try_from(data).unwrap_or(u32::MAX);
+        let header = self.container.header_len();
         self.file.seek(SeekFrom::Start(RIFF_SIZE_AT))?;
+        self.file.write_all(&(data + header - 8).to_le_bytes())?;
         self.file
-            .write_all(&(data + HEADER_LEN - 8).to_le_bytes())?;
-        self.file.seek(SeekFrom::Start(DATA_SIZE_AT))?;
+            .seek(SeekFrom::Start(self.container.data_size_at()))?;
         self.file.write_all(&data.to_le_bytes())?;
         self.file.seek(end)?;
         Ok(())
@@ -212,11 +340,44 @@ impl Writer {
     }
 }
 
-fn write_header(file: &mut File, rate: u32, channels: u16, depth: Depth) -> io::Result<()> {
+fn write_header(
+    file: &mut File,
+    rate: u32,
+    channels: u16,
+    depth: Depth,
+    container: Container,
+) -> io::Result<()> {
     let bytes_per_frame = u32::from(channels) * depth.bytes();
-    file.write_all(b"RIFF")?;
-    file.write_all(&0u32.to_le_bytes())?;
-    file.write_all(b"WAVEfmt ")?;
+    match container {
+        Container::Wav | Container::Bwf => {
+            file.write_all(b"RIFF")?;
+            file.write_all(&0u32.to_le_bytes())?;
+        }
+        Container::Rf64 => {
+            // The 32-bit sizes read -1 and the real ones live in `ds64`.
+            file.write_all(b"RF64")?;
+            file.write_all(&u32::MAX.to_le_bytes())?;
+        }
+    }
+    file.write_all(b"WAVE")?;
+    match container {
+        Container::Wav => {}
+        Container::Bwf => {
+            file.write_all(b"bext")?;
+            file.write_all(&BEXT_LEN.to_le_bytes())?;
+            file.write_all(&vec![0u8; BEXT_LEN as usize])?;
+        }
+        Container::Rf64 => {
+            file.write_all(b"ds64")?;
+            file.write_all(&DS64_LEN.to_le_bytes())?;
+            // riffSize, dataSize, sampleCount, then an empty chunk table.
+            file.write_all(&0u64.to_le_bytes())?;
+            file.write_all(&0u64.to_le_bytes())?;
+            file.write_all(&0u64.to_le_bytes())?;
+            file.write_all(&0u32.to_le_bytes())?;
+        }
+    }
+    file.write_all(b"fmt ")?;
     file.write_all(&16u32.to_le_bytes())?;
     file.write_all(&depth.format_tag().to_le_bytes())?;
     file.write_all(&channels.to_le_bytes())?;
@@ -225,7 +386,10 @@ fn write_header(file: &mut File, rate: u32, channels: u16, depth: Depth) -> io::
     file.write_all(&u16::try_from(bytes_per_frame).unwrap_or(4).to_le_bytes())?;
     file.write_all(&depth.bits().to_le_bytes())?;
     file.write_all(b"data")?;
-    file.write_all(&0u32.to_le_bytes())
+    match container {
+        Container::Wav | Container::Bwf => file.write_all(&0u32.to_le_bytes()),
+        Container::Rf64 => file.write_all(&u32::MAX.to_le_bytes()),
+    }
 }
 
 /// Convert one sample, clipping rather than wrapping.
@@ -247,7 +411,7 @@ fn to_i24(sample: f32) -> [u8; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{Depth, HEADER_LEN, Writer, to_i16, to_i24};
+    use super::{Container, Depth, HEADER_LEN, Writer, to_i16, to_i24};
 
     #[test]
     fn full_scale_maps_to_the_ends_without_wrapping() {
@@ -273,7 +437,7 @@ mod tests {
             (Depth::Float32, 3, 32, 4),
         ] {
             let path = std::env::temp_dir().join(format!("pipemeter-wav-{}.wav", depth.as_str()));
-            let mut writer = Writer::create(&path, 48_000, 2, depth).expect("creates");
+            let mut writer = Writer::create(&path, 48_000, 2, depth, Container::Wav).expect("creates");
             writer.write(&[0.5, -0.5]).expect("writes");
             writer.finish().expect("finishes");
 
@@ -308,7 +472,7 @@ mod tests {
     #[test]
     fn float_keeps_what_is_past_full_scale() {
         let path = std::env::temp_dir().join("pipemeter-wav-float-hot.wav");
-        let mut writer = Writer::create(&path, 48_000, 1, Depth::Float32).expect("creates");
+        let mut writer = Writer::create(&path, 48_000, 1, Depth::Float32, Container::Wav).expect("creates");
         writer.write(&[2.5]).expect("writes");
         writer.finish().expect("finishes");
 
@@ -326,10 +490,101 @@ mod tests {
         assert_eq!(Depth::parse("nonsense"), Depth::Bits16);
     }
 
+    /// Each container puts its own chunks before the samples, and the
+    /// data has to start exactly where the header says it stops.
+    #[test]
+    fn every_container_writes_the_header_it_promises() {
+        for (container, magic) in [
+            (Container::Wav, b"RIFF"),
+            (Container::Bwf, b"RIFF"),
+            (Container::Rf64, b"RF64"),
+        ] {
+            let path =
+                // Named for the test as well as the container: two tests
+                // sharing a path race each other when they run in
+                // parallel, which looked exactly like a wrong header.
+                std::env::temp_dir().join(format!("pipemeter-header-{}.wav", container.as_str()));
+            let mut writer =
+                Writer::create(&path, 48_000, 2, Depth::Bits16, container).expect("creates");
+            writer.write(&[0.5, -0.5]).expect("writes");
+            writer.finish().expect("finishes");
+
+            let b = std::fs::read(&path).expect("reads back");
+            assert_eq!(&b[0..4], magic, "{container:?} magic");
+            assert_eq!(&b[8..12], b"WAVE", "{container:?} form");
+            // One frame of two 16-bit samples after the header.
+            assert_eq!(
+                b.len() as u32,
+                container.header_len() + 4,
+                "{container:?} header length"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// BWF is a WAV with a description chunk in front of the format, and
+    /// a program that does not know it should skip it and still play.
+    #[test]
+    fn broadcast_wave_carries_its_description_chunk() {
+        let path = std::env::temp_dir().join("pipemeter-bext.wav");
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Bwf).expect("creates");
+        writer.write(&[0.0; 8]).expect("writes");
+        writer.finish().expect("finishes");
+
+        let b = std::fs::read(&path).expect("reads back");
+        assert_eq!(&b[12..16], b"bext");
+        assert_eq!(u32::from_le_bytes(b[16..20].try_into().unwrap()), 602);
+        assert_eq!(&b[622..626], b"fmt ", "the format follows the description");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// RF64 exists because a WAV cannot say it is bigger than 4 GB. The
+    /// 32-bit lengths stay at -1 and the real ones live in `ds64`.
+    #[test]
+    fn rf64_keeps_its_lengths_in_sixty_four_bits() {
+        let path = std::env::temp_dir().join("pipemeter-rf64.wav");
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Rf64).expect("creates");
+        writer.write(&[0.25; 16]).expect("writes");
+        writer.finish().expect("finishes");
+
+        let b = std::fs::read(&path).expect("reads back");
+        assert_eq!(&b[12..16], b"ds64");
+        assert_eq!(
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            u32::MAX,
+            "the 32-bit RIFF size must stay -1"
+        );
+        let data = u64::from_le_bytes(b[28..36].try_into().unwrap());
+        let frames = u64::from_le_bytes(b[36..44].try_into().unwrap());
+        assert_eq!(data, 32, "16 samples of 2 bytes");
+        assert_eq!(frames, 8, "two channels");
+        assert_eq!(b.len() as u64, u64::from(Container::Rf64.header_len()) + data);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn container_spellings_round_trip() {
+        for container in [Container::Wav, Container::Bwf, Container::Rf64] {
+            assert_eq!(Container::parse(container.as_str()), container);
+        }
+        assert_eq!(Container::parse("nonsense"), Container::Wav);
+    }
+
+    #[test]
+    fn cycling_the_container_comes_back_round() {
+        let mut at = Container::Wav;
+        for _ in 0..3 {
+            at = at.next();
+        }
+        assert_eq!(at, Container::Wav);
+    }
+
     #[test]
     fn a_finished_file_declares_its_own_length() {
         let path = std::env::temp_dir().join("pipemeter-wav-test.wav");
-        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16).expect("creates");
+        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer
             .write(&[0.0, 0.0, 1.0, -1.0, 0.5, 0.5, 0.0, 0.0])
             .expect("writes");
@@ -353,7 +608,7 @@ mod tests {
     #[test]
     fn an_unfinished_file_still_declares_what_it_holds() {
         let path = std::env::temp_dir().join("pipemeter-wav-abandoned.wav");
-        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16).expect("creates");
+        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer.write(&[0.25; 64]).expect("writes");
         drop(writer);
 
@@ -367,7 +622,7 @@ mod tests {
     #[test]
     fn writing_after_a_patch_does_not_land_in_the_header() {
         let path = std::env::temp_dir().join("pipemeter-wav-seek.wav");
-        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16).expect("creates");
+        let mut writer = Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer.write(&[0.5; 4]).expect("first");
         writer.write(&[0.5; 4]).expect("second");
         writer.finish().expect("finishes");
@@ -382,7 +637,7 @@ mod tests {
     #[test]
     fn the_duration_follows_the_frames_written() {
         let path = std::env::temp_dir().join("pipemeter-wav-duration.wav");
-        let mut writer = Writer::create(&path, 8, 2, Depth::Bits16).expect("creates");
+        let mut writer = Writer::create(&path, 8, 2, Depth::Bits16, Container::Wav).expect("creates");
         writer.write(&[0.0; 32]).expect("writes");
         assert_eq!(writer.duration().as_secs(), 2);
         writer.finish().expect("finishes");
