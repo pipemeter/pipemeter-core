@@ -625,8 +625,28 @@ fn adopt(global: &pipewire::registry::GlobalObject<&DictRef>, device: &Device, i
     let id = device.id;
     if let Ok(node) = registry.bind::<pipewire::node::Node, _>(global) {
         let report = Sender::clone(tx);
+        // The rate is not in any property. It lives in the node's Format
+        // parameter, which has to be asked for - which is why the picker
+        // could say how many channels a device carried and not what rate
+        // it ran at.
+        let by_param = Sender::clone(tx);
         let listener = node
             .add_listener_local()
+            .param(move |_seq, kind, _index, _next, param| {
+                if kind != pipewire::spa::param::ParamType::Format {
+                    return;
+                }
+                let Some(pod) = param else { return };
+                let mut format = pipewire::spa::param::audio::AudioInfoRaw::new();
+                if format.parse(pod).is_err() {
+                    return;
+                }
+                let _ = by_param.send(Event::Format {
+                    id,
+                    rate: Some(format.rate()).filter(|rate| *rate > 0),
+                    channels: Some(format.channels()).filter(|count| *count > 0),
+                });
+            })
             .info(move |info| {
                 let props = info.props();
                 let _ = report.send(Event::Format {
@@ -636,6 +656,7 @@ fn adopt(global: &pipewire::registry::GlobalObject<&DictRef>, device: &Device, i
                 });
             })
             .register();
+        node.subscribe_params(&[pipewire::spa::param::ParamType::Format]);
         controls.borrow_mut().insert(id, node);
         formats.borrow_mut().insert(id, listener);
     }
