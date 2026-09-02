@@ -535,6 +535,13 @@ impl Backend {
             .is_ok()
     }
 
+    /// Update playback gain live for the active player.
+    pub fn set_playback_gain(&self, gain_db: f32) -> bool {
+        self.commands
+            .send(Command::SetPlaybackGain { gain_db })
+            .is_ok()
+    }
+
     /// Set named controls on a chain node.
     ///
     /// Names are `<filter>:<control>` as the graph declared them. Note that a

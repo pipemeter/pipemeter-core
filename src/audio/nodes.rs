@@ -180,6 +180,10 @@ pub enum Command {
         path: Option<std::path::PathBuf>,
         gain_db: f32,
     },
+    /// Update playback gain live for the active player.
+    SetPlaybackGain {
+        gain_db: f32,
+    },
     /// Set named controls on a filter-chain node.
     SetControls {
         node: u32,
@@ -549,6 +553,11 @@ fn handle(context: &CommandContext, command: Command) {
             {
                 player.play();
                 *context.player.borrow_mut() = Some(player);
+            }
+        }
+        Command::SetPlaybackGain { gain_db } => {
+            if let Some(player) = context.player.borrow().as_ref() {
+                player.set_gain(gain_db);
             }
         }
         Command::SetControls { node, controls } => write_controls(context, node, controls),

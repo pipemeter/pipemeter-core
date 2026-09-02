@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -67,8 +67,8 @@ struct Shared {
     total_frames: AtomicU64,
     /// Nominal sample rate of the audio file.
     sample_rate: AtomicU64,
-    /// Linear amplitude gain.
-    gain: f32,
+    /// Linear amplitude gain as IEEE 754 float bits.
+    gain: Arc<AtomicU32>,
     /// Play/Pause state.
     playing: Arc<AtomicBool>,
     /// Termination signal.
@@ -84,6 +84,7 @@ struct UserData {
     pcm_queue: Arc<Mutex<VecDeque<f32>>>,
     playing: Arc<AtomicBool>,
     position_frames: Arc<AtomicU64>,
+    gain: Arc<AtomicU32>,
 }
 
 /// Active in-process player instance. Dropping stops playback and frees `PipeWire` streams.
@@ -143,6 +144,18 @@ impl Player {
         if let Ok(mut req) = self.shared.seek_request.lock() {
             *req = Some(seconds.max(0.0));
         }
+    }
+
+    /// Update playback gain live in dB.
+    pub fn set_gain(&self, gain_db: f32) {
+        let linear_gain = if gain_db <= -60.0 {
+            0.0
+        } else {
+            10.0_f32.powf(gain_db / 20.0)
+        };
+        self.shared
+            .gain
+            .store(linear_gain.to_bits(), Ordering::Relaxed);
     }
 
     /// Loaded file path.
@@ -249,12 +262,20 @@ pub fn start(
     let playing = Arc::new(AtomicBool::new(false));
     let position_frames = Arc::new(AtomicU64::new(0));
 
+    let linear_gain = if gain_db <= -60.0 {
+        0.0
+    } else {
+        10.0_f32.powf(gain_db / 20.0)
+    };
+    let gain = Arc::new(AtomicU32::new(linear_gain.to_bits()));
+
     for target in target_nodes {
         let q = Arc::new(Mutex::new(VecDeque::new()));
         let data = UserData {
             pcm_queue: Arc::clone(&q),
             playing: Arc::clone(&playing),
             position_frames: Arc::clone(&position_frames),
+            gain: Arc::clone(&gain),
         };
 
         if let Some((stream, listener)) =
@@ -274,18 +295,12 @@ pub fn start(
         return None;
     }
 
-    let linear_gain = if gain_db <= -60.0 {
-        0.0
-    } else {
-        10.0_f32.powf(gain_db / 20.0)
-    };
-
     let shared = Arc::new(Shared {
         stream_queues,
         position_frames,
         total_frames: AtomicU64::new(n_frames),
         sample_rate: AtomicU64::new(u64::from(rate)),
-        gain: linear_gain,
+        gain,
         playing,
         stopping: AtomicBool::new(false),
         ended: AtomicBool::new(false),
@@ -338,11 +353,12 @@ fn process_audio_stream(stream: &pipewire::stream::Stream, user_data: &mut UserD
     if let Some(bytes) = data.data() {
         let sample_capacity = bytes.len() / std::mem::size_of::<f32>();
         frame_capacity = sample_capacity / 2;
+        let gain = f32::from_bits(user_data.gain.load(Ordering::Relaxed));
 
         if let Ok(mut q) = user_data.pcm_queue.lock() {
             while out_idx + 1 < sample_capacity && !q.is_empty() {
-                let left = q.pop_front().unwrap_or(0.0);
-                let right = q.pop_front().unwrap_or(0.0);
+                let left = q.pop_front().unwrap_or(0.0) * gain;
+                let right = q.pop_front().unwrap_or(0.0) * gain;
                 let left_bytes = left.to_le_bytes();
                 let right_bytes = right.to_le_bytes();
                 let byte_offset = out_idx * 4;
@@ -528,17 +544,16 @@ fn append_samples(decoded: &AudioBufferRef<'_>, shared: &Shared) {
         }
     }
 
-    let gain = shared.gain;
     for queue in &shared.stream_queues {
         if let Ok(mut q) = queue.lock() {
             if stereo_buf.is_empty() {
                 for sample in &mono_buf {
-                    q.push_back(*sample * gain);
-                    q.push_back(*sample * gain);
+                    q.push_back(*sample);
+                    q.push_back(*sample);
                 }
             } else {
                 for sample in &stereo_buf {
-                    q.push_back(*sample * gain);
+                    q.push_back(*sample);
                 }
             }
         }
