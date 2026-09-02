@@ -674,15 +674,29 @@ fn handle_create_devices(context: &CommandContext) {
 }
 
 fn handle_remove_devices(context: &CommandContext) {
-    for owned in context.owned.borrow().values() {
-        let _ = context.registry.destroy_global(owned.id).into_result();
+    for (name, owned) in context.owned.borrow().iter() {
+        if let Err(err) = context.registry.destroy_global(owned.id).into_result() {
+            log::warn!("could not remove {name}: {err}");
+        }
     }
     context.sinks.borrow_mut().clear();
+    // And forget them here rather than waiting for the registry to say so.
+    //
+    // `create_missing` skips any name still in `owned`, and the menu offers
+    // Remove Devices and Create Devices as two separate items. Pick one then
+    // the other before the removals have come back round through
+    // `global_remove` and every name is still listed, so nothing is created
+    // - leaving a mixer with no virtual devices and a menu that believes it
+    // has them. `handle_recreate_devices` has always cleared it for this
+    // reason; the one-way version needs it just as much.
+    context.owned.borrow_mut().clear();
 }
 
 fn handle_recreate_devices(context: &CommandContext) {
-    for owned in context.owned.borrow().values() {
-        let _ = context.registry.destroy_global(owned.id).into_result();
+    for (name, owned) in context.owned.borrow().iter() {
+        if let Err(err) = context.registry.destroy_global(owned.id).into_result() {
+            log::warn!("could not remove {name} before recreating it: {err}");
+        }
     }
     context.sinks.borrow_mut().clear();
     context.owned.borrow_mut().clear();
