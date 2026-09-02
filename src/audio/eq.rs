@@ -214,7 +214,7 @@ pub fn spawn_config(name: &str, config: &str) -> io::Result<Chain> {
         .map(|p| p.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(":");
-    let process = Command::new("pipewire")
+    let process = Command::new(pipewire_bin())
         .env("LADSPA_PATH", ladspa_path)
         .arg("-c")
         .arg(&path)
@@ -227,6 +227,16 @@ pub fn spawn_config(name: &str, config: &str) -> io::Result<Chain> {
         input: format!("input.{name}"),
         process,
     })
+}
+
+/// Prefer the host system's `pipewire` binary to avoid ambient PATH resolution
+/// picking up non-native (e.g. Homebrew) binaries that can conflict with the daemon.
+fn pipewire_bin() -> &'static str {
+    if std::path::Path::new("/usr/bin/pipewire").exists() {
+        "/usr/bin/pipewire"
+    } else {
+        "pipewire"
+    }
 }
 
 /// Where a chain's generated config lives. The runtime directory, since it

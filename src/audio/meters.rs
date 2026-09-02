@@ -112,7 +112,7 @@ pub fn attach(core: &CoreRc, node: &Target, levels: &Levels) -> Option<Meter> {
             let Some(samples) = data.data() else { return };
 
             let peaks = peak_per_channel(samples, samples_len, channels as usize);
-            if let Ok(mut map) = user_data.levels.lock() {
+            if let Ok(mut map) = user_data.levels.try_lock() {
                 map.insert(user_data.node_id, peaks);
             }
         })
@@ -135,11 +135,13 @@ pub fn attach(core: &CoreRc, node: &Target, levels: &Levels) -> Option<Meter> {
     .into_inner();
     let mut params = [Pod::from_bytes(&values)?];
 
+    // Meters only feed the UI display, so they run as normal priority rather
+    // than taking real-time thread budget away from the audio scheduler.
     stream
         .connect(
             spa::utils::Direction::Input,
             None,
-            StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
+            StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
             &mut params,
         )
         .ok()?;
