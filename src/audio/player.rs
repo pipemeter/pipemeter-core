@@ -67,6 +67,8 @@ struct Shared {
     total_frames: AtomicU64,
     /// Nominal sample rate of the audio file.
     sample_rate: AtomicU64,
+    /// Linear amplitude gain.
+    gain: f32,
     /// Play/Pause state.
     playing: Arc<AtomicBool>,
     /// Termination signal.
@@ -150,23 +152,19 @@ impl Player {
     }
 }
 
-/// Start playing `path` into one or more `target_nodes`.
-pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Player> {
-    if target_nodes.is_empty() {
-        return None;
-    }
+fn probe_audio(
+    path: &Path,
+) -> Option<(
+    symphonia::core::probe::ProbeResult,
+    symphonia::core::formats::Track,
+    u32,
+    u16,
+    u64,
+)> {
     let file = File::open(path)
         .map_err(|err| log::warn!("could not open audio file {}: {err}", path.display()))
         .ok()?;
 
-    let mut stream_queues = Vec::new();
-    let mut streams = Vec::new();
-    let mut listeners = Vec::new();
-
-    let playing = Arc::new(AtomicBool::new(false));
-    let position_frames = Arc::new(AtomicU64::new(0));
-
-    // Probe media file to get exact sample rate first
     let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
@@ -194,6 +192,63 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Play
     let channels = track.codec_params.channels.map_or(2, |c| c.count() as u16);
     let n_frames = track.codec_params.n_frames.unwrap_or(0);
 
+    Some((probed, track, rate, channels, n_frames))
+}
+
+fn create_stream_for_target(
+    core: &CoreRc,
+    target: &str,
+    data: UserData,
+    rate: u32,
+    channels: u16,
+) -> Option<(StreamRc, StreamListener<UserData>)> {
+    let mut props = pipewire::properties::properties! {
+        *pipewire::keys::MEDIA_TYPE => "Audio",
+        *pipewire::keys::MEDIA_CATEGORY => "Playback",
+        *pipewire::keys::MEDIA_ROLE => "Music",
+        *pipewire::keys::TARGET_OBJECT => target,
+        *pipewire::keys::NODE_NAME => "pipemeter_deck_player",
+        *pipewire::keys::NODE_DESCRIPTION => format!("PipeMeter Player -> {target}"),
+    };
+
+    if target.starts_with("pipemeter_") {
+        props.insert("stream.dont-reconnect", "true");
+        props.insert("stream.capture.sink", "true");
+    }
+
+    let stream = StreamRc::new(core.clone(), "pipemeter-deck-player", props).ok()?;
+    let listener = stream
+        .add_local_listener_with_user_data(data)
+        .process(|stream, user_data| {
+            process_audio_stream(stream, user_data);
+        })
+        .register()
+        .ok()?;
+
+    connect_playback(&stream, rate, channels)?;
+    Some((stream, listener))
+}
+
+/// Start playing `path` into one or more `target_nodes` with `gain_db` attenuation/boost.
+pub fn start(
+    core: &CoreRc,
+    target_nodes: &[String],
+    path: &Path,
+    gain_db: f32,
+) -> Option<Player> {
+    if target_nodes.is_empty() {
+        return None;
+    }
+
+    let (probed, track, rate, channels, n_frames) = probe_audio(path)?;
+
+    let mut stream_queues = Vec::new();
+    let mut streams = Vec::new();
+    let mut listeners = Vec::new();
+
+    let playing = Arc::new(AtomicBool::new(false));
+    let position_frames = Arc::new(AtomicU64::new(0));
+
     for target in target_nodes {
         let q = Arc::new(Mutex::new(VecDeque::new()));
         let data = UserData {
@@ -202,32 +257,11 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Play
             position_frames: Arc::clone(&position_frames),
         };
 
-        let props = pipewire::properties::properties! {
-            *pipewire::keys::MEDIA_TYPE => "Audio",
-            *pipewire::keys::MEDIA_CATEGORY => "Playback",
-            *pipewire::keys::MEDIA_ROLE => "Music",
-            *pipewire::keys::TARGET_OBJECT => target.as_str(),
-            *pipewire::keys::NODE_NAME => "pipemeter_deck_player",
-            *pipewire::keys::NODE_DESCRIPTION => format!("PipeMeter Player -> {target}"),
-        };
-
-        let Ok(stream) = StreamRc::new(core.clone(), "pipemeter-deck-player", props) else {
-            continue;
-        };
-
-        let Ok(listener) = stream
-            .add_local_listener_with_user_data(data)
-            .process(|stream, user_data| {
-                process_audio_stream(stream, user_data);
-            })
-            .register()
-        else {
-            continue;
-        };
-
-        if connect_playback(&stream, rate, channels).is_some() {
+        if let Some((stream, listener)) =
+            create_stream_for_target(core, target, data, rate, channels)
+        {
             log::info!(
-                "playing {} ({rate} Hz, {channels} ch) into {target}",
+                "playing {} ({rate} Hz, {channels} ch, gain {gain_db:.1} dB) into {target}",
                 path.display()
             );
             stream_queues.push(q);
@@ -240,11 +274,18 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Play
         return None;
     }
 
+    let linear_gain = if gain_db <= -60.0 {
+        0.0
+    } else {
+        10.0_f32.powf(gain_db / 20.0)
+    };
+
     let shared = Arc::new(Shared {
         stream_queues,
         position_frames,
         total_frames: AtomicU64::new(n_frames),
         sample_rate: AtomicU64::new(u64::from(rate)),
+        gain: linear_gain,
         playing,
         stopping: AtomicBool::new(false),
         ended: AtomicBool::new(false),
@@ -487,15 +528,18 @@ fn append_samples(decoded: &AudioBufferRef<'_>, shared: &Shared) {
         }
     }
 
+    let gain = shared.gain;
     for queue in &shared.stream_queues {
         if let Ok(mut q) = queue.lock() {
             if stereo_buf.is_empty() {
                 for sample in &mono_buf {
-                    q.push_back(*sample);
-                    q.push_back(*sample);
+                    q.push_back(*sample * gain);
+                    q.push_back(*sample * gain);
                 }
             } else {
-                q.extend(stereo_buf.iter().copied());
+                for sample in &stereo_buf {
+                    q.push_back(*sample * gain);
+                }
             }
         }
     }

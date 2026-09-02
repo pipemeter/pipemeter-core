@@ -178,6 +178,7 @@ pub enum Command {
     Play {
         targets: Vec<String>,
         path: Option<std::path::PathBuf>,
+        gain_db: f32,
     },
     /// Set named controls on a filter-chain node.
     SetControls {
@@ -535,11 +536,16 @@ fn handle(context: &CommandContext, command: Command) {
                 .collect();
             *context.recorder.borrow_mut() = started;
         }
-        Command::Play { targets, path } => {
+        Command::Play {
+            targets,
+            path,
+            gain_db,
+        } => {
             let _ = context.player.borrow_mut().take();
             if !targets.is_empty()
                 && let Some(path) = path
-                && let Some(player) = super::player::start(&context.core, &targets, &path)
+                && let Some(player) =
+                    super::player::start(&context.core, &targets, &path, gain_db)
             {
                 player.play();
                 *context.player.borrow_mut() = Some(player);
