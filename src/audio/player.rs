@@ -4,7 +4,7 @@
 //! and feeds raw 32-bit float stereo PCM samples into a `PipeWire` playback stream
 //! targeted at a specified mixer bus node (`pipemeter_bus_a1`..`a5`, `pipemeter_bus_b1`..`b3`).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -59,8 +59,8 @@ impl Status {
 /// Shared playback buffer and control state.
 #[derive(Debug)]
 struct Shared {
-    /// Per-stream stereo PCM queue to broadcast identical audio frames to all targets.
-    stream_queues: Vec<Arc<Mutex<VecDeque<f32>>>>,
+    /// Per-target stereo PCM queues to broadcast audio frames to all active targets.
+    stream_queues: Mutex<HashMap<String, Arc<Mutex<VecDeque<f32>>>>>,
     /// Current playback frame counter.
     position_frames: Arc<AtomicU64>,
     /// Total frames in the audio stream, if known.
@@ -87,13 +87,20 @@ struct UserData {
     gain: Arc<AtomicU32>,
 }
 
+struct TargetStream {
+    target: String,
+    _stream: StreamRc,
+    _listener: StreamListener<UserData>,
+}
+
 /// Active in-process player instance. Dropping stops playback and frees `PipeWire` streams.
 pub struct Player {
     shared: Arc<Shared>,
     decoder_thread: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
-    _streams: Vec<StreamRc>,
-    _listeners: Vec<StreamListener<UserData>>,
+    sample_rate: u32,
+    channels: u16,
+    target_streams: Vec<TargetStream>,
 }
 
 impl std::fmt::Debug for Player {
@@ -156,6 +163,46 @@ impl Player {
         self.shared
             .gain
             .store(linear_gain.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Update playback targets dynamically without interrupting playback or resetting position.
+    pub fn set_targets(&mut self, core: &CoreRc, target_nodes: &[String]) {
+        self.target_streams
+            .retain(|ts| target_nodes.contains(&ts.target));
+        if let Ok(mut map) = self.shared.stream_queues.lock() {
+            map.retain(|target, _| target_nodes.contains(target));
+        }
+
+        for target in target_nodes {
+            if self.target_streams.iter().any(|ts| &ts.target == target) {
+                continue;
+            }
+
+            let q = Arc::new(Mutex::new(VecDeque::new()));
+            let data = UserData {
+                pcm_queue: Arc::clone(&q),
+                playing: Arc::clone(&self.shared.playing),
+                position_frames: Arc::clone(&self.shared.position_frames),
+                gain: Arc::clone(&self.shared.gain),
+            };
+
+            if let Some((stream, listener)) =
+                create_stream_for_target(core, target, data, self.sample_rate, self.channels)
+            {
+                log::info!(
+                    "adding target {target} to active playback of {}",
+                    self.path.display()
+                );
+                if let Ok(mut map) = self.shared.stream_queues.lock() {
+                    map.insert(target.clone(), q);
+                }
+                self.target_streams.push(TargetStream {
+                    target: target.clone(),
+                    _stream: stream,
+                    _listener: listener,
+                });
+            }
+        }
     }
 
     /// Loaded file path.
@@ -250,9 +297,8 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
 
     let (probed, track, rate, channels, n_frames) = probe_audio(path)?;
 
-    let mut stream_queues = Vec::new();
-    let mut streams = Vec::new();
-    let mut listeners = Vec::new();
+    let mut stream_map = HashMap::new();
+    let mut target_streams = Vec::new();
 
     let playing = Arc::new(AtomicBool::new(false));
     let position_frames = Arc::new(AtomicU64::new(0));
@@ -280,18 +326,21 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
                 "playing {} ({rate} Hz, {channels} ch, gain {gain_db:.1} dB) into {target}",
                 path.display()
             );
-            stream_queues.push(q);
-            streams.push(stream);
-            listeners.push(listener);
+            stream_map.insert(target.clone(), q);
+            target_streams.push(TargetStream {
+                target: target.clone(),
+                _stream: stream,
+                _listener: listener,
+            });
         }
     }
 
-    if streams.is_empty() {
+    if target_streams.is_empty() {
         return None;
     }
 
     let shared = Arc::new(Shared {
-        stream_queues,
+        stream_queues: Mutex::new(stream_map),
         position_frames,
         total_frames: AtomicU64::new(n_frames),
         sample_rate: AtomicU64::new(u64::from(rate)),
@@ -316,8 +365,9 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
         shared,
         decoder_thread: Some(decoder_thread),
         path: path.to_owned(),
-        _streams: streams,
-        _listeners: listeners,
+        sample_rate: rate,
+        channels,
+        target_streams,
     })
 }
 
@@ -439,12 +489,12 @@ fn run_decoder_probed(
     while !shared.stopping.load(Ordering::Relaxed) {
         handle_seek(&mut format, track_id, shared);
 
-        let max_q = shared
-            .stream_queues
-            .iter()
-            .map(|q| q.lock().map_or(0, |q| q.len()))
-            .max()
-            .unwrap_or(0);
+        let max_q = shared.stream_queues.lock().map_or(0, |map| {
+            map.values()
+                .map(|q| q.lock().map_or(0, |q| q.len()))
+                .max()
+                .unwrap_or(0)
+        });
 
         if max_q > (rate as usize * 2) {
             std::thread::sleep(Duration::from_millis(15));
@@ -492,9 +542,11 @@ fn handle_seek(
             shared
                 .position_frames
                 .store(seeked_to.actual_ts, Ordering::Relaxed);
-            for q in &shared.stream_queues {
-                if let Ok(mut locked) = q.lock() {
-                    locked.clear();
+            if let Ok(map) = shared.stream_queues.lock() {
+                for q in map.values() {
+                    if let Ok(mut locked) = q.lock() {
+                        locked.clear();
+                    }
                 }
             }
         }
@@ -539,16 +591,18 @@ fn append_samples(decoded: &AudioBufferRef<'_>, shared: &Shared) {
         }
     }
 
-    for queue in &shared.stream_queues {
-        if let Ok(mut q) = queue.lock() {
-            if stereo_buf.is_empty() {
-                for sample in &mono_buf {
-                    q.push_back(*sample);
-                    q.push_back(*sample);
-                }
-            } else {
-                for sample in &stereo_buf {
-                    q.push_back(*sample);
+    if let Ok(map) = shared.stream_queues.lock() {
+        for queue in map.values() {
+            if let Ok(mut q) = queue.lock() {
+                if stereo_buf.is_empty() {
+                    for sample in &mono_buf {
+                        q.push_back(*sample);
+                        q.push_back(*sample);
+                    }
+                } else {
+                    for sample in &stereo_buf {
+                        q.push_back(*sample);
+                    }
                 }
             }
         }

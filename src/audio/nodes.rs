@@ -511,13 +511,25 @@ fn handle(context: &CommandContext, command: Command) {
             path,
             gain_db,
         } => {
-            let _ = context.player.borrow_mut().take();
-            if !targets.is_empty()
-                && let Some(path) = path
-                && let Some(player) = super::player::start(&context.core, &targets, &path, gain_db)
-            {
-                player.play();
-                *context.player.borrow_mut() = Some(player);
+            if targets.is_empty() {
+                let _ = context.player.borrow_mut().take();
+            } else if let Some(path) = path {
+                let mut player_opt = context.player.borrow_mut();
+                if let Some(player) = player_opt.as_mut()
+                    && player.path() == path
+                {
+                    player.set_gain(gain_db);
+                    player.set_targets(&context.core, &targets);
+                    player.play();
+                } else {
+                    let _ = player_opt.take();
+                    if let Some(player) =
+                        super::player::start(&context.core, &targets, &path, gain_db)
+                    {
+                        player.play();
+                        *player_opt = Some(player);
+                    }
+                }
             }
         }
         Command::SetPlaybackGain { gain_db } => {
