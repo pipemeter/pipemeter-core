@@ -57,18 +57,18 @@ impl Status {
 }
 
 /// Shared playback buffer and control state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Shared {
-    /// Interleaved 32-bit float stereo samples waiting to be sent to `PipeWire`.
-    pcm_queue: Mutex<VecDeque<f32>>,
+    /// Per-stream stereo PCM queue to broadcast identical audio frames to all targets.
+    stream_queues: Vec<Arc<Mutex<VecDeque<f32>>>>,
     /// Current playback frame counter.
-    position_frames: AtomicU64,
+    position_frames: Arc<AtomicU64>,
     /// Total frames in the audio stream, if known.
     total_frames: AtomicU64,
     /// Nominal sample rate of the audio file.
     sample_rate: AtomicU64,
     /// Play/Pause state.
-    playing: AtomicBool,
+    playing: Arc<AtomicBool>,
     /// Termination signal.
     stopping: AtomicBool,
     /// Reached end of stream.
@@ -77,9 +77,11 @@ struct Shared {
     seek_request: Mutex<Option<f64>>,
 }
 
-/// State for the `PipeWire` realtime process callback.
+/// State for each `PipeWire` realtime process callback stream.
 struct UserData {
-    shared: Arc<Shared>,
+    pcm_queue: Arc<Mutex<VecDeque<f32>>>,
+    playing: Arc<AtomicBool>,
+    position_frames: Arc<AtomicU64>,
 }
 
 /// Active in-process player instance. Dropping stops playback and frees `PipeWire` streams.
@@ -157,41 +159,60 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Play
         .map_err(|err| log::warn!("could not open audio file {}: {err}", path.display()))
         .ok()?;
 
-    let shared = Arc::new(Shared::default());
-    let (tx_ready, rx_ready) = std::sync::mpsc::channel();
-
-    let decode_shared = Arc::clone(&shared);
-    let decode_path = path.to_owned();
-
-    let decoder_thread = std::thread::Builder::new()
-        .name("pipemeter-player".to_owned())
-        .spawn(move || {
-            run_decoder(file, &decode_path, &decode_shared, &tx_ready);
-        })
-        .ok()?;
-
-    let (rate, channels) = rx_ready
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|err| log::warn!("player decoder init timed out: {err}"))
-        .ok()?;
-
+    let mut stream_queues = Vec::new();
     let mut streams = Vec::new();
     let mut listeners = Vec::new();
 
+    let playing = Arc::new(AtomicBool::new(false));
+    let position_frames = Arc::new(AtomicU64::new(0));
+
+    // Probe media file to get exact sample rate first
+    let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|err| log::warn!("failed to probe audio format {}: {err}", path.display()))
+        .ok()?;
+
+    let track = probed
+        .format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .cloned()?;
+
+    let rate = track.codec_params.sample_rate.unwrap_or(48000);
+    let channels = track.codec_params.channels.map_or(2, |c| c.count() as u16);
+    let n_frames = track.codec_params.n_frames.unwrap_or(0);
+
     for target in target_nodes {
+        let q = Arc::new(Mutex::new(VecDeque::new()));
+        let data = UserData {
+            pcm_queue: Arc::clone(&q),
+            playing: Arc::clone(&playing),
+            position_frames: Arc::clone(&position_frames),
+        };
+
         let props = pipewire::properties::properties! {
             *pipewire::keys::MEDIA_TYPE => "Audio",
             *pipewire::keys::MEDIA_CATEGORY => "Playback",
             *pipewire::keys::MEDIA_ROLE => "Music",
             *pipewire::keys::TARGET_OBJECT => target.as_str(),
             *pipewire::keys::NODE_NAME => "pipemeter_deck_player",
+            *pipewire::keys::NODE_DESCRIPTION => format!("PipeMeter Player -> {target}"),
         };
 
         let Ok(stream) = StreamRc::new(core.clone(), "pipemeter-deck-player", props) else {
             continue;
-        };
-        let data = UserData {
-            shared: Arc::clone(&shared),
         };
 
         let Ok(listener) = stream
@@ -209,6 +230,7 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Play
                 "playing {} ({rate} Hz, {channels} ch) into {target}",
                 path.display()
             );
+            stream_queues.push(q);
             streams.push(stream);
             listeners.push(listener);
         }
@@ -217,6 +239,27 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Play
     if streams.is_empty() {
         return None;
     }
+
+    let shared = Arc::new(Shared {
+        stream_queues,
+        position_frames,
+        total_frames: AtomicU64::new(n_frames),
+        sample_rate: AtomicU64::new(u64::from(rate)),
+        playing,
+        stopping: AtomicBool::new(false),
+        ended: AtomicBool::new(false),
+        seek_request: Mutex::new(None),
+    });
+
+    let decode_shared = Arc::clone(&shared);
+    let decode_path = path.to_owned();
+
+    let decoder_thread = std::thread::Builder::new()
+        .name("pipemeter-player".to_owned())
+        .spawn(move || {
+            run_decoder_probed(probed.format, track.id, rate, &decode_path, &decode_shared);
+        })
+        .ok()?;
 
     Some(Player {
         shared,
@@ -236,7 +279,7 @@ fn process_audio_stream(stream: &pipewire::stream::Stream, user_data: &mut UserD
         return;
     };
 
-    if !user_data.shared.playing.load(Ordering::Relaxed) {
+    if !user_data.playing.load(Ordering::Relaxed) {
         if let Some(bytes) = data.data() {
             bytes.fill(0);
             let bytes_len = bytes.len() as u32;
@@ -255,7 +298,7 @@ fn process_audio_stream(stream: &pipewire::stream::Stream, user_data: &mut UserD
         let sample_capacity = bytes.len() / std::mem::size_of::<f32>();
         frame_capacity = sample_capacity / 2;
 
-        if let Ok(mut q) = user_data.shared.pcm_queue.lock() {
+        if let Ok(mut q) = user_data.pcm_queue.lock() {
             while out_idx + 1 < sample_capacity && !q.is_empty() {
                 let left = q.pop_front().unwrap_or(0.0);
                 let right = q.pop_front().unwrap_or(0.0);
@@ -279,7 +322,6 @@ fn process_audio_stream(stream: &pipewire::stream::Stream, user_data: &mut UserD
 
     let frames_written = (out_idx / 2) as u64;
     user_data
-        .shared
         .position_frames
         .fetch_add(frames_written, Ordering::Relaxed);
 
@@ -321,48 +363,16 @@ fn connect_playback(stream: &StreamRc, rate: u32, channels: u16) -> Option<()> {
     Some(())
 }
 
-fn run_decoder(
-    file: File,
+fn run_decoder_probed(
+    mut format: Box<dyn symphonia::core::formats::FormatReader>,
+    track_id: u32,
+    rate: u32,
     path: &Path,
     shared: &Arc<Shared>,
-    tx_ready: &std::sync::mpsc::Sender<(u32, u16)>,
 ) {
-    let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let probed = match symphonia::default::get_probe().format(
-        &hint,
-        mss,
-        &FormatOptions::default(),
-        &MetadataOptions::default(),
-    ) {
-        Ok(p) => p,
-        Err(err) => {
-            log::warn!("failed to probe audio format {}: {err}", path.display());
-            return;
-        }
-    };
-
-    let mut format = probed.format;
-    let Some(track) = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-    else {
-        log::warn!("no valid audio track found in {}", path.display());
+    let Some(track) = format.tracks().iter().find(|t| t.id == track_id) else {
         return;
     };
-
-    let track_id = track.id;
-    let rate = track.codec_params.sample_rate.unwrap_or(48000);
-    let channels = track.codec_params.channels.map_or(2, |c| c.count() as u16);
-    let n_frames = track.codec_params.n_frames.unwrap_or(0);
-
-    shared.sample_rate.store(u64::from(rate), Ordering::Relaxed);
-    shared.total_frames.store(n_frames, Ordering::Relaxed);
 
     let mut decoder = match symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
@@ -374,13 +384,17 @@ fn run_decoder(
         }
     };
 
-    let _ = tx_ready.send((rate, channels.max(1)));
-
     while !shared.stopping.load(Ordering::Relaxed) {
         handle_seek(&mut format, track_id, shared);
 
-        let queue_len = shared.pcm_queue.lock().map_or(0, |q| q.len());
-        if queue_len > (rate as usize * 2) {
+        let max_q = shared
+            .stream_queues
+            .iter()
+            .map(|q| q.lock().map_or(0, |q| q.len()))
+            .max()
+            .unwrap_or(0);
+
+        if max_q > (rate as usize * 2) {
             std::thread::sleep(Duration::from_millis(15));
             continue;
         }
@@ -426,8 +440,10 @@ fn handle_seek(
             shared
                 .position_frames
                 .store(seeked_to.actual_ts, Ordering::Relaxed);
-            if let Ok(mut q) = shared.pcm_queue.lock() {
-                q.clear();
+            for q in &shared.stream_queues {
+                if let Ok(mut locked) = q.lock() {
+                    locked.clear();
+                }
             }
         }
     }
@@ -471,14 +487,16 @@ fn append_samples(decoded: &AudioBufferRef<'_>, shared: &Shared) {
         }
     }
 
-    if let Ok(mut q) = shared.pcm_queue.lock() {
-        if stereo_buf.is_empty() {
-            for sample in mono_buf {
-                q.push_back(sample);
-                q.push_back(sample);
+    for queue in &shared.stream_queues {
+        if let Ok(mut q) = queue.lock() {
+            if stereo_buf.is_empty() {
+                for sample in &mono_buf {
+                    q.push_back(*sample);
+                    q.push_back(*sample);
+                }
+            } else {
+                q.extend(stereo_buf.iter().copied());
             }
-        } else {
-            q.extend(stereo_buf);
         }
     }
 }
