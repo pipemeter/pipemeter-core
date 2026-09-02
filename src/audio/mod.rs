@@ -556,7 +556,7 @@ impl Backend {
                 log::warn!("cannot record {name}: it is not in the graph");
                 return false;
             };
-            let is_sink = device.direction == Direction::Sink;
+            let is_sink = device.is_sink();
             resolved.push((name.clone(), path.clone(), is_sink));
         }
         self.commands

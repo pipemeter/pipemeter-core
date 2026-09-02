@@ -133,6 +133,24 @@ pub struct Device {
     pub kind: Kind,
 }
 
+impl Device {
+    /// Whether a capture stream must read this through its monitor.
+    ///
+    /// One answer to a question that was being asked two ways: the meters
+    /// compared `class` against `"Audio/Sink"`, the recorder compared
+    /// `direction` against `Direction::Sink`. They agree on every node
+    /// either one is given today, and disagree on a chain node - which
+    /// `describe` calls a Sink by direction while its class reads
+    /// `Stream/Input/Audio`. Nothing meters or records a chain node, so the
+    /// disagreement has never shown; getting it wrong records the default
+    /// device's monitor and says nothing, which is a fault this file has
+    /// already produced four times.
+    #[must_use]
+    pub fn is_sink(&self) -> bool {
+        self.direction == Direction::Sink
+    }
+}
+
 /// A request from the UI thread to the `PipeWire` thread.
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -789,7 +807,7 @@ fn adopt(global: &pipewire::registry::GlobalObject<&DictRef>, device: &Device, i
     let target = meters::Target {
         id,
         name: device.name.clone(),
-        is_sink: device.class == "Audio/Sink",
+        is_sink: device.is_sink(),
     };
     if let std::collections::hash_map::Entry::Vacant(slot) = held.entry(id)
         && let Some(meter) = meters::attach(core, &target, levels)
