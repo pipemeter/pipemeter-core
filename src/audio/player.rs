@@ -58,7 +58,7 @@ impl Status {
 
 /// Read-only handle to a player's live atomics, usable from any thread.
 ///
-/// Cloned out of [`Player::status_handle`] and kept by the [`Backend`] so the
+/// Cloned out of [`Player::status_handle`] and kept by the [`super::Backend`] so the
 /// UI can poll position and duration each frame without crossing the
 /// `PipeWire` thread boundary.
 #[derive(Debug, Clone)]

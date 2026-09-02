@@ -105,6 +105,22 @@ pub(super) fn describe(global: &pipewire::registry::GlobalObject<&DictRef>) -> O
 
 /// Turn a registry global into a [`Stream`], or `None` if it is not an
 /// application playing audio.
+///
+/// # The gap between this and [`describe`]
+///
+/// Together these two decide everything the mixer can see, and a node can
+/// fall between them. [`describe`] keeps a `Stream/*/Audio` node only when
+/// [`super::eq::is_chain_node`] recognises the name, which means a leading
+/// `input.` or `output.`; this one drops anything whose name contains
+/// `pipemeter` at all. So a node that is ours, but named without that
+/// prefix, is kept by neither and simply does not exist as far as the rest
+/// of the application is concerned.
+///
+/// That is deliberate for the meter and recorder streams, which nothing
+/// should route or list. It is a trap for anything else: the deck's players
+/// were named `pipemeter_deck_*`, vanished here, and played into nothing
+/// while reporting success. They are `output.pipemeter_deck_*` now, and
+/// `player::stream_name` has a test pinning it to `is_chain_node`.
 pub(super) fn describe_stream(
     global: &pipewire::registry::GlobalObject<&DictRef>,
 ) -> Option<Stream> {
