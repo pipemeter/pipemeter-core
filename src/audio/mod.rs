@@ -184,6 +184,12 @@ impl Backend {
         self.connected
     }
 
+    /// The error that dropped the connection, if any.
+    #[must_use]
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     /// Throw away the dead connection and start a new one.
     ///
     /// Everything cached here described the old graph: node ids are not
