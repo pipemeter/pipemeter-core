@@ -243,12 +243,7 @@ fn create_stream_for_target(
 }
 
 /// Start playing `path` into one or more `target_nodes` with `gain_db` attenuation/boost.
-pub fn start(
-    core: &CoreRc,
-    target_nodes: &[String],
-    path: &Path,
-    gain_db: f32,
-) -> Option<Player> {
+pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) -> Option<Player> {
     if target_nodes.is_empty() {
         return None;
     }

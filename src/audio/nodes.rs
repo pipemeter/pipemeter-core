@@ -181,9 +181,7 @@ pub enum Command {
         gain_db: f32,
     },
     /// Update playback gain live for the active player.
-    SetPlaybackGain {
-        gain_db: f32,
-    },
+    SetPlaybackGain { gain_db: f32 },
     /// Set named controls on a filter-chain node.
     SetControls {
         node: u32,
@@ -516,8 +514,7 @@ fn handle(context: &CommandContext, command: Command) {
             let _ = context.player.borrow_mut().take();
             if !targets.is_empty()
                 && let Some(path) = path
-                && let Some(player) =
-                    super::player::start(&context.core, &targets, &path, gain_db)
+                && let Some(player) = super::player::start(&context.core, &targets, &path, gain_db)
             {
                 player.play();
                 *context.player.borrow_mut() = Some(player);
@@ -583,8 +580,7 @@ fn handle_recreate_devices(context: &CommandContext) {
     }
     context.sinks.borrow_mut().clear();
     context.owned.borrow_mut().clear();
-    let mut made =
-        super::sinks::create_missing(&context.core, &std::collections::HashSet::new());
+    let mut made = super::sinks::create_missing(&context.core, &std::collections::HashSet::new());
     context.sinks.borrow_mut().append(&mut made);
 }
 
