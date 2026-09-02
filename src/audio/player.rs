@@ -56,6 +56,37 @@ impl Status {
     }
 }
 
+/// Read-only handle to a player's live atomics, usable from any thread.
+///
+/// Cloned out of [`Player::status_handle`] and kept by the [`Backend`] so the
+/// UI can poll position and duration each frame without crossing the
+/// `PipeWire` thread boundary.
+#[derive(Debug, Clone)]
+pub struct StatusHandle {
+    position_frames: Arc<AtomicU64>,
+    total_frames: Arc<AtomicU64>,
+    sample_rate: Arc<AtomicU64>,
+    playing: Arc<AtomicBool>,
+    ended: Arc<AtomicBool>,
+}
+
+impl StatusHandle {
+    /// Read an instantaneous snapshot. All loads are `Relaxed`; this is only
+    /// for UI display, not for synchronisation.
+    #[must_use]
+    pub fn snapshot(&self) -> Status {
+        let total = self.total_frames.load(Ordering::Relaxed);
+        Status {
+            position_frames: self.position_frames.load(Ordering::Relaxed),
+            total_frames: if total == 0 { None } else { Some(total) },
+            sample_rate: self.sample_rate.load(Ordering::Relaxed) as u32,
+            channels: 2,
+            is_playing: self.playing.load(Ordering::Relaxed),
+            is_ended: self.ended.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// Shared playback buffer and control state.
 #[derive(Debug)]
 struct Shared {
@@ -64,9 +95,9 @@ struct Shared {
     /// Current playback frame counter.
     position_frames: Arc<AtomicU64>,
     /// Total frames in the audio stream, if known.
-    total_frames: AtomicU64,
+    total_frames: Arc<AtomicU64>,
     /// Nominal sample rate of the audio file.
-    sample_rate: AtomicU64,
+    sample_rate: Arc<AtomicU64>,
     /// Linear amplitude gain as IEEE 754 float bits.
     gain: Arc<AtomicU32>,
     /// Play/Pause state.
@@ -74,7 +105,7 @@ struct Shared {
     /// Termination signal.
     stopping: AtomicBool,
     /// Reached end of stream.
-    ended: AtomicBool,
+    ended: Arc<AtomicBool>,
     /// Seek request in seconds, if requested.
     seek_request: Mutex<Option<f64>>,
 }
@@ -133,6 +164,21 @@ impl Player {
             channels: 2,
             is_playing: self.shared.playing.load(Ordering::Relaxed),
             is_ended: self.shared.ended.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Clone a lightweight handle to the player's live atomics.
+    ///
+    /// The handle can be kept by any thread and polled cheaply every frame
+    /// via [`StatusHandle::snapshot`] — no locks, no thread hops.
+    #[must_use]
+    pub fn status_handle(&self) -> StatusHandle {
+        StatusHandle {
+            position_frames: Arc::clone(&self.shared.position_frames),
+            total_frames: Arc::clone(&self.shared.total_frames),
+            sample_rate: Arc::clone(&self.shared.sample_rate),
+            playing: Arc::clone(&self.shared.playing),
+            ended: Arc::clone(&self.shared.ended),
         }
     }
 
@@ -342,12 +388,12 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
     let shared = Arc::new(Shared {
         stream_queues: Mutex::new(stream_map),
         position_frames,
-        total_frames: AtomicU64::new(n_frames),
-        sample_rate: AtomicU64::new(u64::from(rate)),
+        total_frames: Arc::new(AtomicU64::new(n_frames)),
+        sample_rate: Arc::new(AtomicU64::new(u64::from(rate))),
         gain,
         playing,
         stopping: AtomicBool::new(false),
-        ended: AtomicBool::new(false),
+        ended: Arc::new(AtomicBool::new(false)),
         seek_request: Mutex::new(None),
     });
 

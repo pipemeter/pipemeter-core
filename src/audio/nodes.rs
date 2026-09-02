@@ -15,6 +15,12 @@ use super::meters::{self, Meter};
 /// Shared peak levels, re-exported so `Backend` can name the type.
 pub type Levels = meters::Levels;
 
+/// Shared read handle to the active player's position atomics.
+///
+/// Populated when playback starts, cleared when it stops. The `Backend` holds
+/// a clone and reads it every frame to paint the deck counter and seekbar.
+pub type PlaybackHandle = std::sync::Arc<std::sync::Mutex<Option<super::player::StatusHandle>>>;
+
 /// Which way audio flows through a device, from the mixer's point of view.
 ///
 /// Note this is `PipeWire`'s sense, not Voicemeeter's: a `Sink` is something
@@ -182,6 +188,8 @@ pub enum Command {
     },
     /// Update playback gain live for the active player.
     SetPlaybackGain { gain_db: f32 },
+    /// Seek the active player to a position in seconds.
+    SeekPlayback { seconds: f64 },
     /// Set named controls on a filter-chain node.
     SetControls {
         node: u32,
@@ -198,23 +206,25 @@ pub enum Command {
     },
 }
 
-/// Start the `PipeWire` thread. Returns the event stream and the command sink.
-pub fn spawn() -> (Receiver<Event>, pipewire::channel::Sender<Command>, Levels) {
+/// Start the `PipeWire` thread. Returns the event stream, command sink, levels, and playback handle.
+pub fn spawn() -> (Receiver<Event>, pipewire::channel::Sender<Command>, Levels, PlaybackHandle) {
     let (tx, rx) = channel();
     let (cmd_tx, cmd_rx) = pipewire::channel::channel();
     let levels: Levels = std::sync::Arc::default();
     let levels_thread = std::sync::Arc::clone(&levels);
+    let playback: PlaybackHandle = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let playback_thread = std::sync::Arc::clone(&playback);
 
     thread::Builder::new()
         .name("pipewire".to_owned())
         .spawn(move || {
-            if let Err(err) = run(&tx, cmd_rx, &levels_thread) {
+            if let Err(err) = run(&tx, cmd_rx, &levels_thread, &playback_thread) {
                 let _ = tx.send(Event::Disconnected(err.to_string()));
             }
         })
         .expect("spawning the PipeWire thread");
 
-    (rx, cmd_tx, levels)
+    (rx, cmd_tx, levels, playback)
 }
 
 /// Connect and run the main loop until it stops.
@@ -222,6 +232,7 @@ fn run(
     tx: &Sender<Event>,
     commands: pipewire::channel::Receiver<Command>,
     levels: &Levels,
+    playback: &PlaybackHandle,
 ) -> Result<(), pipewire::Error> {
     pipewire::init();
 
@@ -319,6 +330,7 @@ fn run(
         sinks_cmd,
         owned_cmd,
         controls_cmd,
+        std::sync::Arc::clone(playback),
     );
     let _core_listener = watch_core(&core, &mainloop, tx)?;
 
@@ -395,6 +407,11 @@ struct CommandContext {
     recorder: Rc<RefCell<Vec<super::recorder::Recorder>>>,
     /// The playback in progress, if any.
     player: Rc<RefCell<Option<super::player::Player>>>,
+    /// Shared handle to the active player's status atomics.
+    ///
+    /// Written when a player starts (holds its `StatusHandle`) and cleared
+    /// to `None` when it stops, so the UI side sees no stale data.
+    playback: PlaybackHandle,
     core: pipewire::core::CoreRc,
     sinks: Rc<RefCell<Vec<pipewire::node::Node>>>,
     owned: Rc<RefCell<HashMap<String, Owned>>>,
@@ -411,11 +428,13 @@ impl CommandContext {
         sinks: Rc<RefCell<Vec<pipewire::node::Node>>>,
         owned: Rc<RefCell<HashMap<String, Owned>>>,
         controls: Rc<RefCell<HashMap<u32, pipewire::node::Node>>>,
+        playback: PlaybackHandle,
     ) -> Self {
         Self {
             router,
             recorder: Rc::new(RefCell::new(Vec::new())),
             player: Rc::new(RefCell::new(None)),
+            playback,
             core,
             sinks,
             owned,
@@ -513,6 +532,9 @@ fn handle(context: &CommandContext, command: Command) {
         } => {
             if targets.is_empty() {
                 let _ = context.player.borrow_mut().take();
+                if let Ok(mut h) = context.playback.lock() {
+                    *h = None;
+                }
             } else if let Some(path) = path {
                 let mut player_opt = context.player.borrow_mut();
                 if let Some(player) = player_opt.as_mut()
@@ -521,12 +543,22 @@ fn handle(context: &CommandContext, command: Command) {
                     player.set_gain(gain_db);
                     player.set_targets(&context.core, &targets);
                     player.play();
+                    // refresh the handle in case this player was re-used
+                    if let Ok(mut h) = context.playback.lock() {
+                        *h = Some(player.status_handle());
+                    }
                 } else {
                     let _ = player_opt.take();
+                    if let Ok(mut h) = context.playback.lock() {
+                        *h = None;
+                    }
                     if let Some(player) =
                         super::player::start(&context.core, &targets, &path, gain_db)
                     {
                         player.play();
+                        if let Ok(mut h) = context.playback.lock() {
+                            *h = Some(player.status_handle());
+                        }
                         *player_opt = Some(player);
                     }
                 }
@@ -535,6 +567,11 @@ fn handle(context: &CommandContext, command: Command) {
         Command::SetPlaybackGain { gain_db } => {
             if let Some(player) = context.player.borrow().as_ref() {
                 player.set_gain(gain_db);
+            }
+        }
+        Command::SeekPlayback { seconds } => {
+            if let Some(player) = context.player.borrow().as_ref() {
+                player.seek(seconds);
             }
         }
         Command::SetControls { node, controls } => write_controls(context, node, controls),

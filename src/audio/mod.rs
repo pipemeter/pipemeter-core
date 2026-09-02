@@ -24,6 +24,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 pub use links::End;
 pub use links::{Route, Tap};
 pub use nodes::{Command, Device, Direction, Kind, LinkInfo, Stream};
+pub use player::{Status as PlayerStatus, StatusHandle as PlayerStatusHandle};
 
 /// Fader dB to the linear amplitude `PipeWire` wants.
 ///
@@ -129,6 +130,11 @@ pub struct Backend {
     devices: Vec<Device>,
     /// Peak levels per node, written by the metering threads.
     levels: nodes::Levels,
+    /// Read handle to the active player's position and duration atomics.
+    ///
+    /// `None` when no track is loaded; populated by the PipeWire thread
+    /// when a [`Command::Play`] starts a new player.
+    playback: nodes::PlaybackHandle,
     /// Applications currently playing, and the links that say where into.
     streams: Vec<Stream>,
     links: Vec<LinkInfo>,
@@ -150,6 +156,7 @@ impl std::fmt::Debug for Backend {
             .field("streams", &self.streams.len())
             .field("links", &self.links.len())
             .field("levels", &"<shared>")
+            .field("playback", &"<shared>")
             .finish()
     }
 }
@@ -159,11 +166,12 @@ impl Backend {
     /// view: if the connection cannot be made, the failure arrives as a
     /// [`Event::Disconnected`] and the UI runs with no devices.
     pub fn spawn() -> Self {
-        let (rx, commands, levels) = nodes::spawn();
+        let (rx, commands, levels, playback) = nodes::spawn();
         Self {
             rx,
             commands,
             levels,
+            playback,
             devices: Vec::new(),
             streams: Vec::new(),
             links: Vec::new(),
@@ -197,16 +205,35 @@ impl Backend {
     /// stable across a reconnect, so keeping any of it would leave the mixer
     /// routing to numbers that now mean something else, or nothing.
     pub fn reconnect(&mut self) {
-        let (rx, commands, levels) = nodes::spawn();
+        let (rx, commands, levels, playback) = nodes::spawn();
         self.rx = rx;
         self.commands = commands;
         self.levels = levels;
+        self.playback = playback;
         self.devices.clear();
         self.streams.clear();
         self.links.clear();
         self.connected = true;
         self.enumerated = false;
         self.error = None;
+    }
+
+    /// Read an instantaneous snapshot of playback position and duration.
+    ///
+    /// Returns `None` when no track is loaded or the player is between files.
+    /// The snapshot is stale by at most one PipeWire callback cycle (~5 ms).
+    #[must_use]
+    pub fn player_status(&self) -> Option<PlayerStatus> {
+        self.playback.lock().ok()?.as_ref().map(|h| h.snapshot())
+    }
+
+    /// Seek the active player to `seconds` from the start.
+    ///
+    /// No-op if no track is loaded.
+    pub fn seek_playback(&self, seconds: f64) -> bool {
+        self.commands
+            .send(Command::SeekPlayback { seconds })
+            .is_ok()
     }
 
     /// Drain pending events. Call once per frame.
