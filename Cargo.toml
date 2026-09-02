@@ -14,7 +14,10 @@ path = "src/lib.rs"
 [dependencies]
 log = "0.4"
 pipewire = { version = "0.10", features = ["v0_3_44"] }
-symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "wav", "vorbis", "aac", "isomp4", "alac"] }
+# `wav` and `aiff` are container readers; `pcm` is the codec inside them,
+# and it is a separate feature. Without it the deck refused every WAV with
+# "unsupported codec" - including takes its own recorder had just written.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "wav", "aiff", "pcm", "adpcm", "vorbis", "aac", "isomp4", "alac"] }
 
 [lints.rust]
 unsafe_code = "forbid"

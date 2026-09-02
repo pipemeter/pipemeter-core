@@ -108,6 +108,15 @@ struct Shared {
     ended: Arc<AtomicBool>,
     /// Seek request in seconds, if requested.
     seek_request: Mutex<Option<f64>>,
+    /// Which stream advances `position_frames`.
+    ///
+    /// Every target renders the same audio, so if each one counted the
+    /// frames it wrote the position would run at the number of outputs
+    /// times real time - two speakers and the counter moves twice as
+    /// fast. Exactly one stream counts, named here rather than fixed at
+    /// creation so that turning off whichever output happens to be first
+    /// hands the job to another instead of stopping the clock.
+    primary_stream: Arc<AtomicU64>,
 }
 
 /// State for each `PipeWire` realtime process callback stream.
@@ -116,10 +125,15 @@ struct UserData {
     playing: Arc<AtomicBool>,
     position_frames: Arc<AtomicU64>,
     gain: Arc<AtomicU32>,
+    /// This stream's identity, compared against `Shared::primary_stream`
+    /// to decide whether it is the one advancing the position.
+    id: u64,
+    primary_stream: Arc<AtomicU64>,
 }
 
 struct TargetStream {
     target: String,
+    id: u64,
     _stream: StreamRc,
     _listener: StreamListener<UserData>,
 }
@@ -132,6 +146,8 @@ pub struct Player {
     sample_rate: u32,
     channels: u16,
     target_streams: Vec<TargetStream>,
+    /// Handed out to each new stream so the primary can be named.
+    next_stream_id: u64,
 }
 
 impl std::fmt::Debug for Player {
@@ -225,11 +241,15 @@ impl Player {
             }
 
             let q = Arc::new(Mutex::new(VecDeque::new()));
+            let id = self.next_stream_id;
+            self.next_stream_id += 1;
             let data = UserData {
                 pcm_queue: Arc::clone(&q),
                 playing: Arc::clone(&self.shared.playing),
                 position_frames: Arc::clone(&self.shared.position_frames),
                 gain: Arc::clone(&self.shared.gain),
+                id,
+                primary_stream: Arc::clone(&self.shared.primary_stream),
             };
 
             if let Some((stream, listener)) =
@@ -244,10 +264,24 @@ impl Player {
                 }
                 self.target_streams.push(TargetStream {
                     target: target.clone(),
+                    id,
                     _stream: stream,
                     _listener: listener,
                 });
             }
+        }
+
+        // Whoever was counting may have just been switched off. Hand the
+        // job to a survivor rather than leaving the position frozen with
+        // audio still playing.
+        let primary = self.shared.primary_stream.load(Ordering::Relaxed);
+        if !self.target_streams.iter().any(|ts| ts.id == primary)
+            && let Some(first) = self.target_streams.first()
+        {
+            log::debug!("position tracking moves to {}", first.target);
+            self.shared
+                .primary_stream
+                .store(first.id, Ordering::Relaxed);
         }
     }
 
@@ -355,14 +389,17 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
         10.0_f32.powf(gain_db / 20.0)
     };
     let gain = Arc::new(AtomicU32::new(linear_gain.to_bits()));
+    let primary_stream = Arc::new(AtomicU64::new(0));
 
-    for target in target_nodes {
+    for (id, target) in (0u64..).zip(target_nodes) {
         let q = Arc::new(Mutex::new(VecDeque::new()));
         let data = UserData {
             pcm_queue: Arc::clone(&q),
             playing: Arc::clone(&playing),
             position_frames: Arc::clone(&position_frames),
             gain: Arc::clone(&gain),
+            id,
+            primary_stream: Arc::clone(&primary_stream),
         };
 
         if let Some((stream, listener)) =
@@ -375,6 +412,7 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
             stream_map.insert(target.clone(), q);
             target_streams.push(TargetStream {
                 target: target.clone(),
+                id,
                 _stream: stream,
                 _listener: listener,
             });
@@ -395,6 +433,7 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
         stopping: AtomicBool::new(false),
         ended: Arc::new(AtomicBool::new(false)),
         seek_request: Mutex::new(None),
+        primary_stream,
     });
 
     let decode_shared = Arc::clone(&shared);
@@ -413,6 +452,7 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
         path: path.to_owned(),
         sample_rate: rate,
         channels,
+        next_stream_id: target_streams.len() as u64,
         target_streams,
     })
 }
@@ -469,9 +509,14 @@ fn process_audio_stream(stream: &pipewire::stream::Stream, user_data: &mut UserD
     }
 
     let frames_written = (out_idx / 2) as u64;
-    user_data
-        .position_frames
-        .fetch_add(frames_written, Ordering::Relaxed);
+    // Only the stream currently named primary advances the position;
+    // every target renders the same audio, so counting them all would run
+    // the clock at the number of outputs times real time.
+    if user_data.id == user_data.primary_stream.load(Ordering::Relaxed) {
+        user_data
+            .position_frames
+            .fetch_add(frames_written, Ordering::Relaxed);
+    }
 
     let chunk = data.chunk_mut();
     *chunk.offset_mut() = 0;

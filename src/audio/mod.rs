@@ -132,7 +132,7 @@ pub struct Backend {
     levels: nodes::Levels,
     /// Read handle to the active player's position and duration atomics.
     ///
-    /// `None` when no track is loaded; populated by the PipeWire thread
+    /// `None` when no track is loaded; populated by the `PipeWire` thread
     /// when a [`Command::Play`] starts a new player.
     playback: nodes::PlaybackHandle,
     /// Applications currently playing, and the links that say where into.
@@ -221,10 +221,14 @@ impl Backend {
     /// Read an instantaneous snapshot of playback position and duration.
     ///
     /// Returns `None` when no track is loaded or the player is between files.
-    /// The snapshot is stale by at most one PipeWire callback cycle (~5 ms).
+    /// The snapshot is stale by at most one `PipeWire` callback cycle (~5 ms).
     #[must_use]
     pub fn player_status(&self) -> Option<PlayerStatus> {
-        self.playback.lock().ok()?.as_ref().map(|h| h.snapshot())
+        self.playback
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(player::StatusHandle::snapshot)
     }
 
     /// Seek the active player to `seconds` from the start.
@@ -233,6 +237,18 @@ impl Backend {
     pub fn seek_playback(&self, seconds: f64) -> bool {
         self.commands
             .send(Command::SeekPlayback { seconds })
+            .is_ok()
+    }
+
+    /// Hold the active player where it is, or let it run on.
+    ///
+    /// Unlike stopping, this keeps the player, its streams and its
+    /// position, so resuming carries on from where it paused.
+    ///
+    /// No-op if no track is loaded.
+    pub fn set_playback_paused(&self, paused: bool) -> bool {
+        self.commands
+            .send(Command::SetPlaybackPaused { paused })
             .is_ok()
     }
 

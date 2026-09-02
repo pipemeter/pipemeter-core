@@ -190,6 +190,12 @@ pub enum Command {
     SetPlaybackGain { gain_db: f32 },
     /// Seek the active player to a position in seconds.
     SeekPlayback { seconds: f64 },
+    /// Hold the active player where it is, or let it run on.
+    ///
+    /// Distinct from stopping: the player, its streams and its position
+    /// all stay, so resuming continues from where it paused rather than
+    /// reopening the file at the beginning.
+    SetPlaybackPaused { paused: bool },
     /// Set named controls on a filter-chain node.
     SetControls {
         node: u32,
@@ -207,7 +213,12 @@ pub enum Command {
 }
 
 /// Start the `PipeWire` thread. Returns the event stream, command sink, levels, and playback handle.
-pub fn spawn() -> (Receiver<Event>, pipewire::channel::Sender<Command>, Levels, PlaybackHandle) {
+pub fn spawn() -> (
+    Receiver<Event>,
+    pipewire::channel::Sender<Command>,
+    Levels,
+    PlaybackHandle,
+) {
     let (tx, rx) = channel();
     let (cmd_tx, cmd_rx) = pipewire::channel::channel();
     let levels: Levels = std::sync::Arc::default();
@@ -489,6 +500,25 @@ type Formats = Rc<RefCell<HashMap<u32, pipewire::node::NodeListener>>>;
 /// Control writes waiting for their node to be bound, by node id.
 type Pending = HashMap<u32, Vec<(String, f32)>>;
 
+/// The commands that adjust a player already running.
+///
+/// Split from `handle` to keep it inside the line limit, and because
+/// these three share a shape: none of them start or stop anything, they
+/// all reach for the current player and do nothing when there isn't one.
+fn adjust_player(context: &CommandContext, command: &Command) {
+    let borrowed = context.player.borrow();
+    let Some(player) = borrowed.as_ref() else {
+        return;
+    };
+    match *command {
+        Command::SetPlaybackGain { gain_db } => player.set_gain(gain_db),
+        Command::SeekPlayback { seconds } => player.seek(seconds),
+        Command::SetPlaybackPaused { paused: true } => player.pause(),
+        Command::SetPlaybackPaused { paused: false } => player.play(),
+        _ => {}
+    }
+}
+
 /// Apply one command from the UI.
 fn handle(context: &CommandContext, command: Command) {
     match command {
@@ -564,16 +594,9 @@ fn handle(context: &CommandContext, command: Command) {
                 }
             }
         }
-        Command::SetPlaybackGain { gain_db } => {
-            if let Some(player) = context.player.borrow().as_ref() {
-                player.set_gain(gain_db);
-            }
-        }
-        Command::SeekPlayback { seconds } => {
-            if let Some(player) = context.player.borrow().as_ref() {
-                player.seek(seconds);
-            }
-        }
+        Command::SetPlaybackGain { .. }
+        | Command::SetPlaybackPaused { .. }
+        | Command::SeekPlayback { .. } => adjust_player(context, &command),
         Command::SetControls { node, controls } => write_controls(context, node, controls),
         Command::SetVolume {
             node,
