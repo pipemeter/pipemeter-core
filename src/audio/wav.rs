@@ -307,6 +307,42 @@ impl Writer {
         })
     }
 
+    /// Take the rate and channel count the graph actually negotiated.
+    ///
+    /// The header is written when the file is opened, from what the recorder
+    /// page asked for - but the stream only pins the sample *format* and
+    /// leaves rate and layout to negotiation, so what arrives need not match
+    /// what was asked. A file labelled 48 kHz stereo holding 44.1 kHz mono
+    /// plays at the wrong speed, and nothing about it says why.
+    ///
+    /// Only meaningful before any samples are written, which is where it is
+    /// called; once frames exist the header describes them and rewriting it
+    /// would be the corruption it is meant to prevent.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the header cannot be rewritten.
+    pub fn adopt_format(&mut self, rate: u32, channels: u16) -> io::Result<()> {
+        if self.frames > 0 || rate == 0 || channels == 0 {
+            return Ok(());
+        }
+        if rate == self.rate && channels == self.channels {
+            return Ok(());
+        }
+        log::info!(
+            "the graph gave the recorder {rate} Hz {channels}ch, not {} Hz {}ch; \
+             writing the header it actually holds",
+            self.rate,
+            self.channels
+        );
+        self.rate = rate;
+        self.channels = channels;
+        self.file.seek(SeekFrom::Start(0))?;
+        write_header(&mut self.file, rate, channels, self.depth, self.container)?;
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
     /// Append interleaved samples in whatever format this file holds.
     ///
     /// # Errors
@@ -538,6 +574,56 @@ fn to_i24_be(sample: f32) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::{Container, Depth, HEADER_LEN, Writer, to_i16, to_i24};
+
+    /// The header is written when the file is opened, from what was asked
+    /// for; the stream then negotiates its own rate and layout. A file that
+    /// says 48 kHz stereo while holding 44.1 kHz mono plays at the wrong
+    /// speed, and the recorder used to parse the negotiated format and throw
+    /// it away.
+    #[test]
+    fn the_header_learns_what_the_graph_actually_gave() {
+        let dir = std::env::temp_dir().join("pipemeter-wav-adopt");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("take.wav");
+
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("writer opens");
+        writer.adopt_format(44_100, 1).expect("header rewrites");
+        writer.write(&[0.0; 64]).expect("samples land");
+        writer.finish().expect("header patched");
+
+        let mut reader = std::fs::File::open(&path).expect("reopen");
+        let mut header = [0u8; HEADER_LEN as usize];
+        std::io::Read::read_exact(&mut reader, &mut header).expect("header reads");
+        let channels = u16::from_le_bytes([header[22], header[23]]);
+        let rate = u32::from_le_bytes([header[24], header[25], header[26], header[27]]);
+        assert_eq!((rate, channels), (44_100, 1));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Once samples exist the header describes them, so rewriting it would
+    /// be the corruption it is meant to prevent.
+    #[test]
+    fn a_started_file_keeps_the_header_it_has() {
+        let dir = std::env::temp_dir().join("pipemeter-wav-adopt");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("started.wav");
+
+        let mut writer =
+            Writer::create(&path, 48_000, 2, Depth::Bits16, Container::Wav).expect("writer opens");
+        writer.write(&[0.0; 64]).expect("samples land");
+        writer.adopt_format(44_100, 1).expect("no-op");
+        writer.finish().expect("header patched");
+
+        let mut reader = std::fs::File::open(&path).expect("reopen");
+        let mut header = [0u8; HEADER_LEN as usize];
+        std::io::Read::read_exact(&mut reader, &mut header).expect("header reads");
+        let rate = u32::from_le_bytes([header[24], header[25], header[26], header[27]]);
+        assert_eq!(rate, 48_000);
+
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn full_scale_maps_to_the_ends_without_wrapping() {

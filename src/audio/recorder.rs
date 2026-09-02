@@ -36,6 +36,13 @@ struct Shared {
     /// Frames written, so the deck can show elapsed time without reaching
     /// into the writer thread.
     frames: AtomicU64,
+    /// The rate and channel count the graph settled on, once it has.
+    ///
+    /// Read by the writer thread before its first write. The stream pins
+    /// only the sample format and leaves these to negotiation - which is
+    /// deliberate, an earlier version pinned them and got a file of zeros -
+    /// so the header has to learn what was actually agreed.
+    negotiated: Mutex<Option<(u32, u16)>>,
 }
 
 /// State the process callback needs.
@@ -93,7 +100,7 @@ pub fn start(
 ) -> Option<Recorder> {
     const CHANNELS: u16 = 2;
 
-    let mut writer = wav::Writer::create(path, rate, CHANNELS, depth, container)
+    let writer = wav::Writer::create(path, rate, CHANNELS, depth, container)
         .map_err(|err| log::warn!("could not record to {}: {err}", path.display()))
         .ok()?;
 
@@ -140,6 +147,15 @@ pub fn start(
                 return;
             }
             let _ = user_data.format.parse(param);
+            // The meters read this off the same callback to interpret their
+            // buffers; the recorder used to parse it and drop it on the
+            // floor, which is how a file could claim a rate it did not hold.
+            if let Ok(mut negotiated) = user_data.shared.negotiated.lock() {
+                *negotiated = Some((
+                    user_data.format.rate(),
+                    u16::try_from(user_data.format.channels()).unwrap_or(2),
+                ));
+            }
         })
         .process(|stream, user_data| {
             let Some(mut buffer) = stream.dequeue_buffer() else {
@@ -163,35 +179,7 @@ pub fn start(
         .register()
         .ok()?;
 
-    let drain = Arc::clone(&shared);
-    let writer_thread = std::thread::Builder::new()
-        .name("pipemeter-recorder".to_owned())
-        .spawn(move || {
-            loop {
-                let batch = {
-                    let Ok(mut pending) = drain.pending.lock() else {
-                        break;
-                    };
-                    mem::take(&mut *pending)
-                };
-                if batch.is_empty() {
-                    if drain.stopping.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    continue;
-                }
-                if writer.write(&batch).is_err() {
-                    break;
-                }
-                let frames = writer.frames();
-                drain.frames.store(frames, Ordering::Relaxed);
-            }
-            if let Err(err) = writer.finish() {
-                log::warn!("could not finish the recording: {err}");
-            }
-        })
-        .ok()?;
+    let writer_thread = spawn_writer(Arc::clone(&shared), writer)?;
 
     connect(&stream)?;
 
@@ -212,6 +200,54 @@ pub fn start(
 /// negotiated, ran, and delivered nothing but zeros - which is what the
 /// meters avoid by asking for the format alone and letting the graph say
 /// the rest.
+/// Drain captured samples to disk on a thread of their own.
+///
+/// The `PipeWire` callback must not block, so it only appends to a buffer;
+/// everything that touches the file happens here. Split from `start` to keep
+/// it inside the line limit.
+fn spawn_writer(
+    drain: Arc<Shared>,
+    mut writer: wav::Writer,
+) -> Option<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("pipemeter-recorder".to_owned())
+        .spawn(move || {
+            loop {
+                let batch = {
+                    let Ok(mut pending) = drain.pending.lock() else {
+                        break;
+                    };
+                    mem::take(&mut *pending)
+                };
+                if batch.is_empty() {
+                    if drain.stopping.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
+                // Before the first samples land, so the header describes
+                // what the file is about to hold rather than what was asked
+                // for.
+                if let Ok(negotiated) = drain.negotiated.lock()
+                    && let Some((rate, channels)) = *negotiated
+                    && let Err(err) = writer.adopt_format(rate, channels)
+                {
+                    log::warn!("could not correct the recording's header: {err}");
+                }
+                if writer.write(&batch).is_err() {
+                    break;
+                }
+                let frames = writer.frames();
+                drain.frames.store(frames, Ordering::Relaxed);
+            }
+            if let Err(err) = writer.finish() {
+                log::warn!("could not finish the recording: {err}");
+            }
+        })
+        .ok()
+}
+
 fn connect(stream: &StreamRc) -> Option<()> {
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
