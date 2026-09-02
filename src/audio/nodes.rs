@@ -174,9 +174,9 @@ pub enum Command {
         /// What they are wrapped in.
         container: super::wav::Container,
     },
-    /// Start or stop playing an audio file into a target bus.
+    /// Start or stop playing an audio file into one or more target buses.
     Play {
-        target: Option<String>,
+        targets: Vec<String>,
         path: Option<std::path::PathBuf>,
     },
     /// Set named controls on a filter-chain node.
@@ -535,10 +535,11 @@ fn handle(context: &CommandContext, command: Command) {
                 .collect();
             *context.recorder.borrow_mut() = started;
         }
-        Command::Play { target, path } => {
+        Command::Play { targets, path } => {
             let _ = context.player.borrow_mut().take();
-            if let (Some(target), Some(path)) = (target, path)
-                && let Some(player) = super::player::start(&context.core, &target, &path)
+            if !targets.is_empty()
+                && let Some(path) = path
+                && let Some(player) = super::player::start(&context.core, &targets, &path)
             {
                 player.play();
                 *context.player.borrow_mut() = Some(player);

@@ -87,8 +87,8 @@ pub struct Player {
     shared: Arc<Shared>,
     decoder_thread: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
-    _stream: StreamRc,
-    _listener: StreamListener<UserData>,
+    _streams: Vec<StreamRc>,
+    _listeners: Vec<StreamListener<UserData>>,
 }
 
 impl std::fmt::Debug for Player {
@@ -148,8 +148,11 @@ impl Player {
     }
 }
 
-/// Start playing `path` into `target_node`.
-pub fn start(core: &CoreRc, target_node: &str, path: &Path) -> Option<Player> {
+/// Start playing `path` into one or more `target_nodes`.
+pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path) -> Option<Player> {
+    if target_nodes.is_empty() {
+        return None;
+    }
     let file = File::open(path)
         .map_err(|err| log::warn!("could not open audio file {}: {err}", path.display()))
         .ok()?;
@@ -172,40 +175,55 @@ pub fn start(core: &CoreRc, target_node: &str, path: &Path) -> Option<Player> {
         .map_err(|err| log::warn!("player decoder init timed out: {err}"))
         .ok()?;
 
-    let props = pipewire::properties::properties! {
-        *pipewire::keys::MEDIA_TYPE => "Audio",
-        *pipewire::keys::MEDIA_CATEGORY => "Playback",
-        *pipewire::keys::MEDIA_ROLE => "Music",
-        *pipewire::keys::TARGET_OBJECT => target_node,
-        *pipewire::keys::NODE_NAME => "pipemeter_deck_player",
-    };
+    let mut streams = Vec::new();
+    let mut listeners = Vec::new();
 
-    let stream = StreamRc::new(core.clone(), "pipemeter-deck-player", props).ok()?;
-    let data = UserData {
-        shared: Arc::clone(&shared),
-    };
+    for target in target_nodes {
+        let props = pipewire::properties::properties! {
+            *pipewire::keys::MEDIA_TYPE => "Audio",
+            *pipewire::keys::MEDIA_CATEGORY => "Playback",
+            *pipewire::keys::MEDIA_ROLE => "Music",
+            *pipewire::keys::TARGET_OBJECT => target.as_str(),
+            *pipewire::keys::NODE_NAME => "pipemeter_deck_player",
+        };
 
-    let listener = stream
-        .add_local_listener_with_user_data(data)
-        .process(|stream, user_data| {
-            process_audio_stream(stream, user_data);
-        })
-        .register()
-        .ok()?;
+        let Ok(stream) = StreamRc::new(core.clone(), "pipemeter-deck-player", props) else {
+            continue;
+        };
+        let data = UserData {
+            shared: Arc::clone(&shared),
+        };
 
-    connect_playback(&stream, rate, channels)?;
+        let Ok(listener) = stream
+            .add_local_listener_with_user_data(data)
+            .process(|stream, user_data| {
+                process_audio_stream(stream, user_data);
+            })
+            .register()
+        else {
+            continue;
+        };
 
-    log::info!(
-        "playing {} ({rate} Hz, {channels} ch) into {target_node}",
-        path.display()
-    );
+        if connect_playback(&stream, rate, channels).is_some() {
+            log::info!(
+                "playing {} ({rate} Hz, {channels} ch) into {target}",
+                path.display()
+            );
+            streams.push(stream);
+            listeners.push(listener);
+        }
+    }
+
+    if streams.is_empty() {
+        return None;
+    }
 
     Some(Player {
         shared,
         decoder_thread: Some(decoder_thread),
         path: path.to_owned(),
-        _stream: stream,
-        _listener: listener,
+        _streams: streams,
+        _listeners: listeners,
     })
 }
 

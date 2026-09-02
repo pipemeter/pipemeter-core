@@ -524,11 +524,11 @@ impl Backend {
             .is_ok()
     }
 
-    /// Play an audio file into a target node, or stop playback (`None`).
-    pub fn play(&self, target: Option<&str>, path: Option<&std::path::Path>) -> bool {
+    /// Play an audio file into one or more target nodes, or stop playback (empty targets or `None` path).
+    pub fn play(&self, targets: &[String], path: Option<&std::path::Path>) -> bool {
         self.commands
             .send(Command::Play {
-                target: target.map(ToOwned::to_owned),
+                targets: targets.to_vec(),
                 path: path.map(ToOwned::to_owned),
             })
             .is_ok()
