@@ -335,6 +335,22 @@ fn probe_audio(
     Some((probed, track, rate, channels, n_frames))
 }
 
+/// The node name the deck's stream for `target` will carry.
+///
+/// One name per target, rather than one name for the deck, so the mixer can
+/// find each stream in the registry and route it itself. They used to share
+/// `pipemeter_deck_player`, which no caller could tell apart.
+///
+/// The `output.` prefix is not decoration: [`super::eq::is_chain_node`] is
+/// what decides whether a `Stream/Output/Audio` node is one of ours and
+/// therefore worth remembering, and it only looks at names prefixed
+/// `input.` or `output.`. Without it the deck's own streams were dropped on
+/// the floor by the registry listener and nothing could route them.
+#[must_use]
+pub fn stream_name(target: &str) -> String {
+    format!("output.pipemeter_deck_{}", target.replace('.', "_"))
+}
+
 fn create_stream_for_target(
     core: &CoreRc,
     target: &str,
@@ -342,19 +358,27 @@ fn create_stream_for_target(
     rate: u32,
     channels: u16,
 ) -> Option<(StreamRc, StreamListener<UserData>)> {
-    let mut props = pipewire::properties::properties! {
+    // Deliberately no TARGET_OBJECT and no AUTOCONNECT below.
+    //
+    // A deck target is not a sink as far as the session manager is
+    // concerned: a B bus is declared `Audio/Source/Virtual` so the desktop
+    // lists it among the microphones, and a bus EQ chain's input is a
+    // `Stream/Input/Audio`. Asked to place a Playback stream on either, the
+    // manager ignores the target and falls back to the default sink - which
+    // this application sets to VAIO, so the deck played into VAIO and the
+    // chosen bus stayed silent.
+    //
+    // So the stream is left unconnected and the mixer links it by node id
+    // through the same Router that routes every strip, where `media.class`
+    // does not come into it and a target that has not appeared yet is
+    // retried rather than lost.
+    let props = pipewire::properties::properties! {
         *pipewire::keys::MEDIA_TYPE => "Audio",
         *pipewire::keys::MEDIA_CATEGORY => "Playback",
         *pipewire::keys::MEDIA_ROLE => "Music",
-        *pipewire::keys::TARGET_OBJECT => target,
-        *pipewire::keys::NODE_NAME => "pipemeter_deck_player",
+        *pipewire::keys::NODE_NAME => stream_name(target),
         *pipewire::keys::NODE_DESCRIPTION => format!("PipeMeter Player -> {target}"),
     };
-
-    if target.starts_with("pipemeter_") {
-        props.insert("stream.dont-reconnect", "true");
-        props.insert("stream.capture.sink", "true");
-    }
 
     let stream = StreamRc::new(core.clone(), "pipemeter-deck-player", props).ok()?;
     let listener = stream
@@ -548,7 +572,9 @@ fn connect_playback(stream: &StreamRc, rate: u32, channels: u16) -> Option<()> {
         .connect(
             spa::utils::Direction::Output,
             None,
-            StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
+            // No AUTOCONNECT: see `create_stream_for_target`. The mixer
+            // links this stream itself.
+            StreamFlags::MAP_BUFFERS,
             &mut params,
         )
         .ok()?;
