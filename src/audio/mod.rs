@@ -252,6 +252,15 @@ impl Backend {
             .is_ok()
     }
 
+    /// Enable or disable seamless loop-back on end of file.
+    ///
+    /// When enabled, the decoder rewinds to the start instead of stopping.
+    pub fn set_playback_loop(&self, enabled: bool) -> bool {
+        self.commands
+            .send(Command::SetPlaybackLoop { enabled })
+            .is_ok()
+    }
+
     /// Drain pending events. Call once per frame.
     pub fn poll(&mut self) {
         loop {

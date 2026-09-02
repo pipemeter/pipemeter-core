@@ -106,6 +106,8 @@ struct Shared {
     stopping: AtomicBool,
     /// Reached end of stream.
     ended: Arc<AtomicBool>,
+    /// When true, the decoder rewinds to the start on EOF instead of stopping.
+    loop_playback: AtomicBool,
     /// Seek request in seconds, if requested.
     seek_request: Mutex<Option<f64>>,
     /// Which stream advances `position_frames`.
@@ -213,6 +215,11 @@ impl Player {
         if let Ok(mut req) = self.shared.seek_request.lock() {
             *req = Some(seconds.max(0.0));
         }
+    }
+
+    /// Enable or disable seamless loop-back to the start on end of file.
+    pub fn set_loop(&self, enabled: bool) {
+        self.shared.loop_playback.store(enabled, Ordering::Relaxed);
     }
 
     /// Update playback gain live in dB.
@@ -456,6 +463,7 @@ pub fn start(core: &CoreRc, target_nodes: &[String], path: &Path, gain_db: f32) 
         playing,
         stopping: AtomicBool::new(false),
         ended: Arc::new(AtomicBool::new(false)),
+        loop_playback: AtomicBool::new(false),
         seek_request: Mutex::new(None),
         primary_stream,
     });
@@ -621,12 +629,38 @@ fn run_decoder_probed(
         let packet = match format.next_packet() {
             Ok(pkt) => pkt,
             Err(SymphError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                if shared.loop_playback.load(Ordering::Relaxed) {
+                    // Loop: rewind to the beginning and keep decoding.
+                    let _ = format.seek(
+                        symphonia::core::formats::SeekMode::Coarse,
+                        symphonia::core::formats::SeekTo::Time {
+                            time: symphonia::core::units::Time::from(0.0f64),
+                            track_id: Some(track_id),
+                        },
+                    );
+                    decoder.reset();
+                    shared.position_frames.store(0, Ordering::Relaxed);
+                    continue;
+                }
                 shared.ended.store(true, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
             }
             Err(err) => {
                 log::debug!("decode stream finished or error: {err}");
+                if shared.loop_playback.load(Ordering::Relaxed) {
+                    // Loop: rewind to the beginning and keep decoding.
+                    let _ = format.seek(
+                        symphonia::core::formats::SeekMode::Coarse,
+                        symphonia::core::formats::SeekTo::Time {
+                            time: symphonia::core::units::Time::from(0.0f64),
+                            track_id: Some(track_id),
+                        },
+                    );
+                    decoder.reset();
+                    shared.position_frames.store(0, Ordering::Relaxed);
+                    continue;
+                }
                 shared.ended.store(true, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(50));
                 continue;

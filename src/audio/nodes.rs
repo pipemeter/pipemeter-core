@@ -217,6 +217,8 @@ pub enum Command {
     /// all stay, so resuming continues from where it paused rather than
     /// reopening the file at the beginning.
     SetPlaybackPaused { paused: bool },
+    /// Enable or disable seamless loop-back on end of file.
+    SetPlaybackLoop { enabled: bool },
     /// Set named controls on a filter-chain node.
     SetControls {
         node: u32,
@@ -556,6 +558,7 @@ fn adjust_player(context: &CommandContext, command: &Command) {
         Command::SeekPlayback { seconds } => player.seek(seconds),
         Command::SetPlaybackPaused { paused: true } => player.pause(),
         Command::SetPlaybackPaused { paused: false } => player.play(),
+        Command::SetPlaybackLoop { enabled } => player.set_loop(enabled),
         _ => {}
     }
 }
@@ -630,7 +633,8 @@ fn handle(context: &CommandContext, command: Command) {
         }
         Command::SetPlaybackGain { .. }
         | Command::SetPlaybackPaused { .. }
-        | Command::SeekPlayback { .. } => adjust_player(context, &command),
+        | Command::SeekPlayback { .. }
+        | Command::SetPlaybackLoop { .. } => adjust_player(context, &command),
         Command::SetControls { node, controls } => write_controls(context, node, controls),
         Command::SetVolume {
             node,
