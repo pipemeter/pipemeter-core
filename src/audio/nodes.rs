@@ -481,41 +481,9 @@ fn handle(context: &CommandContext, command: Command) {
                 .borrow_mut()
                 .set_route(&context.core, route, enabled);
         }
-        Command::CreateDevices => {
-            let stale: Vec<(String, u32)> = context
-                .owned
-                .borrow()
-                .iter()
-                .filter(|(name, owned)| super::sinks::wrong_class(name, &owned.class))
-                .map(|(name, owned)| (name.clone(), owned.id))
-                .collect();
-            for (name, id) in stale {
-                log::info!("replacing {name}: it was created by an older build");
-                let _ = context.registry.destroy_global(id).into_result();
-                context.owned.borrow_mut().remove(&name);
-            }
-
-            let existing: std::collections::HashSet<String> =
-                context.owned.borrow().keys().cloned().collect();
-            let mut made = super::sinks::create_missing(&context.core, &existing);
-            context.sinks.borrow_mut().append(&mut made);
-        }
-        Command::RemoveDevices => {
-            for owned in context.owned.borrow().values() {
-                let _ = context.registry.destroy_global(owned.id).into_result();
-            }
-            context.sinks.borrow_mut().clear();
-        }
-        Command::RecreateDevices => {
-            for owned in context.owned.borrow().values() {
-                let _ = context.registry.destroy_global(owned.id).into_result();
-            }
-            context.sinks.borrow_mut().clear();
-            context.owned.borrow_mut().clear();
-            let mut made =
-                super::sinks::create_missing(&context.core, &std::collections::HashSet::new());
-            context.sinks.borrow_mut().append(&mut made);
-        }
+        Command::CreateDevices => handle_create_devices(context),
+        Command::RemoveDevices => handle_remove_devices(context),
+        Command::RecreateDevices => handle_recreate_devices(context),
         Command::SetMono { node, end, mono } => {
             context
                 .router
@@ -580,6 +548,44 @@ fn handle(context: &CommandContext, command: Command) {
             None => log::debug!("no proxy bound for node {node}"),
         },
     }
+}
+
+fn handle_create_devices(context: &CommandContext) {
+    let stale: Vec<(String, u32)> = context
+        .owned
+        .borrow()
+        .iter()
+        .filter(|(name, owned)| super::sinks::wrong_class(name, &owned.class))
+        .map(|(name, owned)| (name.clone(), owned.id))
+        .collect();
+    for (name, id) in stale {
+        log::info!("replacing {name}: it was created by an older build");
+        let _ = context.registry.destroy_global(id).into_result();
+        context.owned.borrow_mut().remove(&name);
+    }
+
+    let existing: std::collections::HashSet<String> =
+        context.owned.borrow().keys().cloned().collect();
+    let mut made = super::sinks::create_missing(&context.core, &existing);
+    context.sinks.borrow_mut().append(&mut made);
+}
+
+fn handle_remove_devices(context: &CommandContext) {
+    for owned in context.owned.borrow().values() {
+        let _ = context.registry.destroy_global(owned.id).into_result();
+    }
+    context.sinks.borrow_mut().clear();
+}
+
+fn handle_recreate_devices(context: &CommandContext) {
+    for owned in context.owned.borrow().values() {
+        let _ = context.registry.destroy_global(owned.id).into_result();
+    }
+    context.sinks.borrow_mut().clear();
+    context.owned.borrow_mut().clear();
+    let mut made =
+        super::sinks::create_missing(&context.core, &std::collections::HashSet::new());
+    context.sinks.borrow_mut().append(&mut made);
 }
 
 /// Bind a proxy to an application's stream, as [`adopt`] does for a device.
