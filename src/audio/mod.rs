@@ -13,11 +13,11 @@ mod links;
 mod meters;
 pub mod monitors;
 mod nodes;
+pub mod player;
 mod recorder;
 pub mod send;
 pub mod sinks;
 pub mod wav;
-pub mod player;
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 

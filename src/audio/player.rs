@@ -16,7 +16,7 @@ use pipewire::spa;
 use pipewire::spa::pod::Pod;
 use pipewire::stream::{StreamFlags, StreamListener, StreamRc};
 use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error as SymphError;
 use symphonia::core::formats::{FormatOptions, SeekMode, SeekTo};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
@@ -361,10 +361,7 @@ fn run_decoder(
     while !shared.stopping.load(Ordering::Relaxed) {
         handle_seek(&mut format, track_id, shared);
 
-        let queue_len = shared
-            .pcm_queue
-            .lock()
-            .map_or(0, |q| q.len());
+        let queue_len = shared.pcm_queue.lock().map_or(0, |q| q.len());
         if queue_len > (rate as usize * 2) {
             std::thread::sleep(Duration::from_millis(15));
             continue;
@@ -372,9 +369,7 @@ fn run_decoder(
 
         let packet = match format.next_packet() {
             Ok(pkt) => pkt,
-            Err(SymphError::IoError(err))
-                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
+            Err(SymphError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                 shared.ended.store(true, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
@@ -387,18 +382,20 @@ fn run_decoder(
             }
         };
 
-        if packet.track_id() == track_id && let Ok(decoded) = decoder.decode(&packet) {
+        if packet.track_id() == track_id
+            && let Ok(decoded) = decoder.decode(&packet)
+        {
             append_samples(&decoded, shared);
         }
     }
 }
 
-fn handle_seek(format: &mut Box<dyn symphonia::core::formats::FormatReader>, track_id: u32, shared: &Arc<Shared>) {
-    let seek_target = shared
-        .seek_request
-        .lock()
-        .ok()
-        .and_then(|mut r| r.take());
+fn handle_seek(
+    format: &mut Box<dyn symphonia::core::formats::FormatReader>,
+    track_id: u32,
+    shared: &Arc<Shared>,
+) {
+    let seek_target = shared.seek_request.lock().ok().and_then(|mut r| r.take());
     if let Some(target_sec) = seek_target {
         let time = Time::from(target_sec);
         if let Ok(seeked_to) = format.seek(
