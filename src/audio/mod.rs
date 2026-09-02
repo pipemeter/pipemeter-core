@@ -17,6 +17,7 @@ mod recorder;
 pub mod send;
 pub mod sinks;
 pub mod wav;
+pub mod player;
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -519,6 +520,16 @@ impl Backend {
                 rate,
                 depth,
                 container,
+            })
+            .is_ok()
+    }
+
+    /// Play an audio file into a target node, or stop playback (`None`).
+    pub fn play(&self, target: Option<&str>, path: Option<&std::path::Path>) -> bool {
+        self.commands
+            .send(Command::Play {
+                target: target.map(ToOwned::to_owned),
+                path: path.map(ToOwned::to_owned),
             })
             .is_ok()
     }

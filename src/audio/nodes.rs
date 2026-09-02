@@ -174,6 +174,11 @@ pub enum Command {
         /// What they are wrapped in.
         container: super::wav::Container,
     },
+    /// Start or stop playing an audio file into a target bus.
+    Play {
+        target: Option<String>,
+        path: Option<std::path::PathBuf>,
+    },
     /// Set named controls on a filter-chain node.
     SetControls {
         node: u32,
@@ -385,25 +390,17 @@ struct CommandContext {
     /// Every take in progress. More than one when the pre-fader inputs are
     /// armed: the recorder page arms a set of them, not just the one bus.
     recorder: Rc<RefCell<Vec<super::recorder::Recorder>>>,
+    /// The playback in progress, if any.
+    player: Rc<RefCell<Option<super::player::Player>>>,
     core: pipewire::core::CoreRc,
     sinks: Rc<RefCell<Vec<pipewire::node::Node>>>,
     owned: Rc<RefCell<HashMap<String, Owned>>>,
     registry: pipewire::registry::RegistryRc,
     controls: Rc<RefCell<HashMap<u32, pipewire::node::Node>>>,
-    /// Control writes for nodes that were not bound when they arrived.
-    ///
-    /// A filter chain that is not running yet has no proxy here, and the
-    /// write used to be dropped in silence. Held instead, and retried on
-    /// the next write, which is enough: the caller pushes controls
-    /// repeatedly, so a chain that comes up gets its levels on the next
-    /// pass rather than never.
     pending: Rc<RefCell<Pending>>,
 }
 
 impl CommandContext {
-    /// The two fields nobody else shares - the takes in progress and the
-    /// held control writes - are made here rather than passed in, which is
-    /// also what keeps this to six arguments instead of eight.
     fn new(
         core: pipewire::core::CoreRc,
         registry: pipewire::registry::RegistryRc,
@@ -415,6 +412,7 @@ impl CommandContext {
         Self {
             router,
             recorder: Rc::new(RefCell::new(Vec::new())),
+            player: Rc::new(RefCell::new(None)),
             core,
             sinks,
             owned,
@@ -536,6 +534,15 @@ fn handle(context: &CommandContext, command: Command) {
                 })
                 .collect();
             *context.recorder.borrow_mut() = started;
+        }
+        Command::Play { target, path } => {
+            let _ = context.player.borrow_mut().take();
+            if let (Some(target), Some(path)) = (target, path)
+                && let Some(player) = super::player::start(&context.core, &target, &path)
+            {
+                player.play();
+                *context.player.borrow_mut() = Some(player);
+            }
         }
         Command::SetControls { node, controls } => write_controls(context, node, controls),
         Command::SetVolume {
