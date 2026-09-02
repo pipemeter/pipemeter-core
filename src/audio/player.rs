@@ -725,3 +725,38 @@ fn append_samples(decoded: &AudioBufferRef<'_>, shared: &Shared) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::stream_name;
+    use crate::audio::eq::is_chain_node;
+
+    /// The registry listener only keeps a `Stream/Output/Audio` node when
+    /// `is_chain_node` recognises the name, so a deck stream it does not
+    /// recognise is dropped and can never be routed. That is not a loud
+    /// failure - the deck plays into nothing and says nothing - and the two
+    /// functions live in different files, so nothing else ties them
+    /// together.
+    #[test]
+    fn deck_streams_are_recognised_as_ours() {
+        for target in [
+            "pipemeter_b1",
+            "input.pipemeter_bus5_buseq",
+            "alsa_output.usb-Some_Headset-00.analog-stereo",
+            "pmtest_out",
+        ] {
+            let name = stream_name(target);
+            assert!(
+                is_chain_node(&name),
+                "{name} would be dropped by the registry listener"
+            );
+        }
+    }
+
+    /// One name per target, or the mixer cannot tell two streams apart -
+    /// which is what a single shared `pipemeter_deck_player` did.
+    #[test]
+    fn each_target_gets_its_own_name() {
+        assert_ne!(stream_name("pipemeter_b1"), stream_name("pipemeter_b2"));
+    }
+}
