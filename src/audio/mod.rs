@@ -301,6 +301,15 @@ impl Backend {
                     self.devices.retain(|d| d.id != id);
                     self.streams.retain(|s| s.id != id);
                     self.links.retain(|l| l.id != id);
+                    // The peak this node last reached, too. The `PipeWire`
+                    // thread drops the meter itself, but nothing was
+                    // clearing the entry it had been writing - so every
+                    // headset, interface and application stream that came
+                    // and went left one behind for the life of the process.
+                    if let Ok(mut levels) = self.levels.lock() {
+                        levels.remove(&id);
+                        log::debug!("node {id} gone; {} still metered", levels.len());
+                    }
                 }
                 Ok(Event::Enumerated) => {
                     self.enumerated = true;
