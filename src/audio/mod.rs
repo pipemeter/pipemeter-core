@@ -549,13 +549,15 @@ impl Backend {
     ) -> bool {
         let mut resolved = Vec::with_capacity(takes.len());
         for (name, path) in takes {
-            // Looked up only to check it is there; the take targets it by
-            // name, which is what TARGET_OBJECT resolves.
-            let Some(_id) = self.id_of(name) else {
+            // The take targets the node by name, which is what
+            // TARGET_OBJECT resolves - but which way it faces decides how it
+            // is read, and reading it the wrong way does not fail loudly.
+            let Some(device) = self.devices.iter().find(|d| &d.name == name) else {
                 log::warn!("cannot record {name}: it is not in the graph");
                 return false;
             };
-            resolved.push((name.clone(), path.clone()));
+            let is_sink = device.direction == Direction::Sink;
+            resolved.push((name.clone(), path.clone(), is_sink));
         }
         self.commands
             .send(Command::Record {

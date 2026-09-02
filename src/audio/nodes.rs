@@ -173,7 +173,10 @@ pub enum Command {
         /// Each take's node, by name rather than by id. `TARGET_OBJECT`
         /// resolves a name; handed a registry id it matches nothing and the
         /// stream records a header and no audio at all.
-        takes: Vec<(String, std::path::PathBuf)>,
+        ///
+        /// The flag is whether that node is a sink, which decides how it is
+        /// read: sinks through their monitor, sources directly.
+        takes: Vec<(String, std::path::PathBuf, bool)>,
         rate: u32,
         /// How samples are stored on disk.
         depth: super::wav::Depth,
@@ -500,6 +503,26 @@ type Formats = Rc<RefCell<HashMap<u32, pipewire::node::NodeListener>>>;
 /// Control writes waiting for their node to be bound, by node id.
 type Pending = HashMap<u32, Vec<(String, f32)>>;
 
+/// Open every take of one recording, replacing whatever was running.
+///
+/// Split from `handle` to keep it inside the line limit.
+fn start_takes(
+    context: &CommandContext,
+    takes: &[(String, std::path::PathBuf, bool)],
+    rate: u32,
+    depth: super::wav::Depth,
+    container: super::wav::Container,
+) {
+    context.recorder.borrow_mut().clear();
+    let started: Vec<_> = takes
+        .iter()
+        .filter_map(|(node, path, is_sink)| {
+            super::recorder::start(&context.core, node, path, rate, depth, container, *is_sink)
+        })
+        .collect();
+    *context.recorder.borrow_mut() = started;
+}
+
 /// The commands that adjust a player already running.
 ///
 /// Split from `handle` to keep it inside the line limit, and because
@@ -546,14 +569,7 @@ fn handle(context: &CommandContext, command: Command) {
             depth,
             container,
         } => {
-            context.recorder.borrow_mut().clear();
-            let started: Vec<_> = takes
-                .iter()
-                .filter_map(|(node, path)| {
-                    super::recorder::start(&context.core, node, path, rate, depth, container)
-                })
-                .collect();
-            *context.recorder.borrow_mut() = started;
+            start_takes(context, &takes, rate, depth, container);
         }
         Command::Play {
             targets,

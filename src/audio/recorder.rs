@@ -74,7 +74,11 @@ impl Drop for Recorder {
     }
 }
 
-/// Start recording `node_id` to `path`.
+/// Start recording `node` to `path`.
+///
+/// `is_sink` says which way the node faces: a sink is read through its
+/// monitor, a source directly. It is not a detail that can be guessed and
+/// left to the session manager to sort out - see below.
 ///
 /// Returns `None` if the stream or the file could not be opened, which is
 /// not fatal: the deck reports that nothing is recording.
@@ -85,6 +89,7 @@ pub fn start(
     rate: u32,
     depth: wav::Depth,
     container: wav::Container,
+    is_sink: bool,
 ) -> Option<Recorder> {
     const CHANNELS: u16 = 2;
 
@@ -93,14 +98,27 @@ pub fn start(
         .ok()?;
 
     let shared = Arc::new(Shared::default());
-    let props = pipewire::properties::properties! {
+    // `stream.capture.sink` used to be set unconditionally, which asked to
+    // record the monitor of a node that is often not a sink at all: a B bus
+    // is declared `Audio/Source/Virtual`. The session manager cannot honour
+    // that, and rather than refusing it quietly substituted the default
+    // sink's monitor - so arming B1 recorded the VAIO strip instead, at the
+    // right length and with no hint anything was wrong.
+    //
+    // So it is set only when the node really is a sink, and the stream is
+    // told not to reconnect: if the target cannot be had, the take should
+    // come out empty and obviously broken rather than plausibly wrong.
+    let mut props = pipewire::properties::properties! {
         *pipewire::keys::MEDIA_TYPE => "Audio",
         *pipewire::keys::MEDIA_CATEGORY => "Capture",
         *pipewire::keys::MEDIA_ROLE => "Production",
-        *pipewire::keys::STREAM_CAPTURE_SINK => "true",
+        *pipewire::keys::NODE_DONT_RECONNECT => "true",
         *pipewire::keys::TARGET_OBJECT => node,
         *pipewire::keys::NODE_NAME => "pipemeter_recorder",
     };
+    if is_sink {
+        props.insert(*pipewire::keys::STREAM_CAPTURE_SINK, "true");
+    }
 
     let stream = StreamRc::new(core.clone(), "pipemeter-recorder", props).ok()?;
     let data = UserData {
