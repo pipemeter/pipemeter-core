@@ -190,18 +190,6 @@ pub fn return_control(index: usize) -> [String; 2] {
     [format!("r{index}L:Mult"), format!("r{index}R:Mult")]
 }
 
-/// Which capture pair strip `index` sends into.
-#[must_use]
-pub fn send_pair(index: usize) -> u32 {
-    index as u32
-}
-
-/// Which playback pair bus `index` takes back.
-#[must_use]
-pub fn return_pair(index: usize) -> u32 {
-    index as u32
-}
-
 /// Build the chain's configuration.
 /// The chain's configuration text.
 ///
