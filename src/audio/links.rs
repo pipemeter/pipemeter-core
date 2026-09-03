@@ -53,6 +53,18 @@ pub struct Router {
     /// separately lets [`Self::retry_pending`] complete it once the ports
     /// arrive; the UI sends each button once and cannot retry for us.
     desired: HashSet<Route>,
+    /// How many pairings were available the last time each route was built.
+    ///
+    /// Not how many links came back. `retry_pending` used to compare the
+    /// pairings on offer against the links actually made, and rebuild when
+    /// the first exceeded the second - which is right for a route still
+    /// waiting on a port, and wrong for one where the daemon refused a
+    /// link. A refusal leaves the two permanently unequal, so the route
+    /// was torn down and remade once a second for as long as it lasted,
+    /// taking its working links with it every time. Comparing against what
+    /// was on offer last time asks the question that was meant: has
+    /// anything new appeared since?
+    attempted: HashMap<Route, usize>,
     /// Nodes to fold down to mono, by which end of a route they sit on.
     ///
     /// Done in the graph rather than with a filter: joining every output to
@@ -80,6 +92,7 @@ impl std::fmt::Debug for Router {
             .field("ports", &self.ports.len())
             .field("routes", &self.routes.len())
             .field("desired", &self.desired.len())
+            .field("attempted", &self.attempted.len())
             .field("mono", &(self.mono[0].len() + self.mono[1].len()))
             .finish()
     }
@@ -144,15 +157,17 @@ impl Router {
             .desired
             .iter()
             .filter(|route| {
-                let have = self.routes.get(route).map_or(0, Vec::len);
-                self.pair_count(**route) > have
+                let last = self.attempted.get(route).copied().unwrap_or(0);
+                self.pair_count(**route) > last
             })
             .copied()
             .collect();
 
         for key in stale {
+            let available = self.pair_count(key);
             self.routes.remove(&key);
             let links = self.connect(core, key);
+            self.attempted.insert(key, available);
             if !links.is_empty() {
                 self.routes.insert(key, links);
             }
@@ -268,6 +283,8 @@ impl Router {
             .retain(|route| route.source != node_id && route.target != node_id);
         self.routes
             .retain(|route, _| route.source != node_id && route.target != node_id);
+        self.attempted
+            .retain(|route, _| route.source != node_id && route.target != node_id);
         if self.routes.len() != before {
             log::debug!(
                 "node {node_id} went away, dropping {} route(s)",
@@ -283,6 +300,9 @@ impl Router {
         if !enabled {
             self.desired.remove(&key);
             self.routes.remove(&key);
+            // Or turning it back on would find the old high-water mark and
+            // decide there was nothing new to do.
+            self.attempted.remove(&key);
             return;
         }
         self.desired.insert(key);
@@ -290,7 +310,9 @@ impl Router {
             return;
         }
 
+        let available = self.pair_count(route);
         let links = self.connect(core, route);
+        self.attempted.insert(key, available);
         if links.is_empty() {
             log::debug!(
                 "route {} -> {} deferred until its ports appear",
@@ -372,6 +394,66 @@ mod tests {
             channel: channel.to_owned(),
             slot,
         }
+    }
+
+    /// `retry_pending` rebuilds a route when more channels could be joined
+    /// than last time it tried. It used to compare against the links it had
+    /// actually made, which is the same number only while every link
+    /// succeeds - and a route the daemon refuses a link for would then look
+    /// permanently incomplete, so it was torn down and remade on every
+    /// pass, losing its working links each time.
+    ///
+    /// Asserted through the bookkeeping rather than the links, since making
+    /// a real one needs a `PipeWire` core: with the ports unchanged, no
+    /// route should be picked as stale a second time.
+    #[test]
+    fn a_route_is_not_rebuilt_while_nothing_new_has_appeared() {
+        let mut r = Router::default();
+        r.add_port(port(1, 10, PortDirection::Out, "FL"));
+        r.add_port(port(2, 10, PortDirection::Out, "FR"));
+        r.add_port(port(3, 20, PortDirection::In, "FL"));
+        r.add_port(port(4, 20, PortDirection::In, "FR"));
+        let route = super::Route::new(10, 20);
+
+        // Stand in for a connect that managed nothing, as a refused link
+        // would: the route is wanted, and the high-water mark is what the
+        // graph offered at the time.
+        r.desired.insert(route);
+        r.attempted.insert(route, r.pair_count(route));
+
+        let stale: Vec<_> = r
+            .desired
+            .iter()
+            .filter(|it| r.pair_count(**it) > r.attempted.get(it).copied().unwrap_or(0))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "nothing changed, so nothing should be rebuilt"
+        );
+
+        // A port appearing is a reason to try again.
+        r.add_port(at(5, 10, PortDirection::Out, "FL", 1));
+        r.add_port(at(6, 20, PortDirection::In, "FL", 1));
+        let stale: Vec<_> = r
+            .desired
+            .iter()
+            .filter(|it| r.pair_count(**it) > r.attempted.get(it).copied().unwrap_or(0))
+            .collect();
+        assert_eq!(stale.len(), 1, "a new pairing should reopen the route");
+    }
+
+    /// Turning a route off forgets its high-water mark, or turning it back
+    /// on would decide there was nothing left to do.
+    #[test]
+    fn switching_a_route_off_forgets_what_it_had_tried() {
+        let mut r = Router::default();
+        let route = super::Route::new(10, 20);
+        r.desired.insert(route);
+        r.attempted.insert(route, 2);
+        r.desired.remove(&route);
+        r.routes.remove(&route);
+        r.attempted.remove(&route);
+        assert!(!r.attempted.contains_key(&route));
     }
 
     #[test]
