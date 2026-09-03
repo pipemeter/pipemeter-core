@@ -512,13 +512,28 @@ impl PanelView {
 /// Deliberately not the whole [`Strip`]: the name, the device and the node
 /// behind it belong to *that* strip and copying them would be nonsense.
 /// What travels is how the strip is set up, not what it is.
+///
+/// The detailed compressor and gate parameters travel with their knobs.
+/// They did not, and the strip menu offers "Copy > Compressor" and
+/// "Copy > Gate" by name - so a person setting a threshold in the dialog
+/// and copying the section it belongs to got the strength knob and none of
+/// the work.
+///
+/// Still outside: the fader, the mute and solo flags, the routing buttons
+/// and the limiter. Those are judgements about what copying a strip should
+/// mean rather than oversights, and the menu does not name any of them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub eq: [f32; 3],
     pub pad: [(f32, f32); 3],
     pub panel: PanelView,
     pub comp: f32,
+    /// What the Compressor dialog sets, which the Comp knob alone does not
+    /// carry.
+    pub compressor: Compressor,
     pub gate: f32,
+    /// What the Gate dialog sets.
+    pub gate_params: Gate,
     pub denoiser: f32,
     pub sends: [f32; 4],
     pub fx_post: [bool; 4],
@@ -584,7 +599,9 @@ impl Strip {
             pad: self.pad,
             panel: self.panel,
             comp: self.comp,
+            compressor: self.compressor,
             gate: self.gate,
+            gate_params: self.gate_params,
             denoiser: self.denoiser,
             sends: [self.reverb, self.delay, self.send1, self.send2],
             fx_post: self.fx_post,
@@ -603,9 +620,11 @@ impl Strip {
         }
         if all || section == Section::Compressor {
             self.comp = from.comp;
+            self.compressor = from.compressor;
         }
         if all || section == Section::Gate {
             self.gate = from.gate;
+            self.gate_params = from.gate_params;
         }
         if all || section == Section::Denoiser {
             self.denoiser = from.denoiser;
@@ -620,5 +639,58 @@ impl Strip {
     pub fn reset(&mut self, section: Section) {
         let fresh = Self::new(self.kind, self.name.clone(), self.device.clone());
         self.apply(&fresh.settings(), section);
+    }
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::{Kind, Section, Strip};
+
+    /// "Copy > Compressor" names the section the dialog edits, so it has to
+    /// carry what the dialog sets. It used to move the Comp knob alone and
+    /// leave the threshold behind.
+    #[test]
+    fn copying_the_compressor_takes_its_dialog_with_it() {
+        let mut from = Strip::new(Kind::Virtual, "from", "dev");
+        from.comp = 0.8;
+        from.compressor.threshold = -24.0;
+        from.compressor.gain_out = 6.0;
+
+        let mut onto = Strip::new(Kind::Virtual, "onto", "dev");
+        onto.apply(&from.settings(), Section::Compressor);
+
+        assert!((onto.comp - 0.8).abs() < f32::EPSILON);
+        assert!((onto.compressor.threshold + 24.0).abs() < f32::EPSILON);
+        assert!((onto.compressor.gain_out - 6.0).abs() < f32::EPSILON);
+    }
+
+    /// And the gate's, which is where DAMPING lives.
+    #[test]
+    fn copying_the_gate_takes_its_dialog_with_it() {
+        let mut from = Strip::new(Kind::Virtual, "from", "dev");
+        from.gate = 0.6;
+        from.gate_params.damping = -30.0;
+
+        let mut onto = Strip::new(Kind::Virtual, "onto", "dev");
+        onto.apply(&from.settings(), Section::Gate);
+
+        assert!((onto.gate - 0.6).abs() < f32::EPSILON);
+        assert!((onto.gate_params.damping + 30.0).abs() < f32::EPSILON);
+    }
+
+    /// A section still moves only itself: copying the gate must not bring
+    /// the compressor along.
+    #[test]
+    fn a_section_still_leaves_the_others_alone() {
+        let mut from = Strip::new(Kind::Virtual, "from", "dev");
+        from.compressor.threshold = -24.0;
+        from.gate_params.damping = -30.0;
+
+        let mut onto = Strip::new(Kind::Virtual, "onto", "dev");
+        let untouched = onto.compressor.threshold;
+        onto.apply(&from.settings(), Section::Gate);
+
+        assert!((onto.gate_params.damping + 30.0).abs() < f32::EPSILON);
+        assert!((onto.compressor.threshold - untouched).abs() < f32::EPSILON);
     }
 }
