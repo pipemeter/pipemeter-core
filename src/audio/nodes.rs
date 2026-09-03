@@ -506,11 +506,8 @@ fn write_controls(context: &CommandContext, node: u32, controls: Vec<(String, f3
         }
     }
 
-    let bound = context.controls.borrow().get(&node).is_some();
-    if bound {
-        if let Some(proxy) = context.controls.borrow().get(&node) {
-            set_controls(proxy, &controls);
-        }
+    if let Some(proxy) = context.controls.borrow().get(&node) {
+        set_controls(proxy, &controls);
     } else {
         context.pending.borrow_mut().insert(node, controls);
     }
