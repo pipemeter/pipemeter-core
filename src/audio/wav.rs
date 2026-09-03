@@ -416,22 +416,34 @@ impl Writer {
             let frames_u32 = u32::try_from(self.frames).unwrap_or(u32::MAX);
             // FORM size (total file size minus 8: 4 bytes FORM id + 4 bytes size field)
             self.file.seek(SeekFrom::Start(AIFF_FORM_SIZE_AT))?;
-            self.file
-                .write_all(&(data_u32 + AIFF_HEADER_LEN - 8).to_be_bytes())?;
+            self.file.write_all(
+                &data_u32
+                    .saturating_add(AIFF_HEADER_LEN)
+                    .saturating_sub(8)
+                    .to_be_bytes(),
+            )?;
             // Number of sample frames in COMM chunk
             self.file.seek(SeekFrom::Start(AIFF_FRAMES_AT))?;
             self.file.write_all(&frames_u32.to_be_bytes())?;
             // SSND chunk size (data length + 8 bytes offset & blockSize fields)
             self.file.seek(SeekFrom::Start(AIFF_SSND_SIZE_AT))?;
-            self.file.write_all(&(data_u32 + 8).to_be_bytes())?;
+            self.file
+                .write_all(&data_u32.saturating_add(8).to_be_bytes())?;
             self.file.seek(end)?;
             return Ok(());
         }
 
+        // Saturating, not wrapping: past four gigabytes `data` is already
+        // clamped to u32::MAX, and adding the header to that overflowed -
+        // a panic in a debug build, a nonsense length field in a release
+        // one. A WAV this big cannot state its own size whatever we write,
+        // which is what warn_if_oversize above has just said; the largest
+        // number the field can hold is the least wrong thing to put in it.
         let data = u32::try_from(data).unwrap_or(u32::MAX);
         let header = self.container.header_len();
         self.file.seek(SeekFrom::Start(RIFF_SIZE_AT))?;
-        self.file.write_all(&(data + header - 8).to_le_bytes())?;
+        self.file
+            .write_all(&data.saturating_add(header).saturating_sub(8).to_le_bytes())?;
         self.file
             .seek(SeekFrom::Start(self.container.data_size_at()))?;
         self.file.write_all(&data.to_le_bytes())?;
