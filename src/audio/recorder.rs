@@ -56,7 +56,9 @@ pub struct Recorder {
     shared: Arc<Shared>,
     writer: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
-    _stream: StreamRc,
+    /// Held in an `Option` only so [`Drop`] can let go of it before the
+    /// writer is joined. See there for why the order matters.
+    stream: Option<StreamRc>,
     _listener: StreamListener<UserData>,
 }
 
@@ -66,7 +68,7 @@ impl std::fmt::Debug for Recorder {
             .field("shared", &self.shared)
             .field("writer", &self.writer.is_some())
             .field("path", &self.path)
-            .field("_stream", &"<pipewire>")
+            .field("stream", &self.stream.is_some())
             .field("_listener", &"<pipewire>")
             .finish()
     }
@@ -74,6 +76,13 @@ impl std::fmt::Debug for Recorder {
 
 impl Drop for Recorder {
     fn drop(&mut self) {
+        // The stream goes first, so nothing is still arriving while the
+        // writer finishes. It used to be dropped last, after the join and
+        // therefore after `finish()` had already patched the header: any
+        // callback landing in that window pushed samples nobody would ever
+        // write, so a take lost up to a quantum off its end - about twenty
+        // milliseconds, silently, every time.
+        self.stream.take();
         self.shared.stopping.store(true, Ordering::Relaxed);
         if let Some(handle) = self.writer.take() {
             let _ = handle.join();
@@ -188,7 +197,7 @@ pub fn start(
         shared,
         writer: Some(writer_thread),
         path: path.to_owned(),
-        _stream: stream,
+        stream: Some(stream),
         _listener: listener,
     })
 }
