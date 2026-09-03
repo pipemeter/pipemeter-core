@@ -419,25 +419,28 @@ impl Backend {
         }
     }
 
-    /// The live id of a node by its `PipeWire` name, if it is present.
-    /// Ids are not stable across restarts, so routing always goes through
-    /// this rather than caching one.
-    /// How many links leave a node right now.
+    /// How many links arrive at a node.
     ///
     /// Asked rather than assumed: a route is a *request*, and one whose
     /// ports have not appeared is deferred inside the router. Code that
     /// treats "I asked" as "it happened" reports success and leaves a chain
     /// wired to nothing, which is exactly what the effect chains did.
-    /// How many links arrive at a node.
     #[must_use]
     pub fn links_into(&self, node: u32) -> usize {
         self.links.iter().filter(|l| l.input_node == node).count()
     }
 
+    /// How many links leave a node right now.
+    #[must_use]
     pub fn links_from(&self, node: u32) -> usize {
         self.links.iter().filter(|l| l.output_node == node).count()
     }
 
+    /// The live id of a node by its `PipeWire` name, if it is present.
+    ///
+    /// Ids are not stable across restarts, so routing always goes through
+    /// this rather than caching one.
+    #[must_use]
     pub fn id_of(&self, name: &str) -> Option<u32> {
         self.devices.iter().find(|d| d.name == name).map(|d| d.id)
     }
@@ -485,21 +488,22 @@ impl Backend {
             .unwrap_or((0.0, 0.0))
     }
 
-    /// Set a node's level from a fader position in dB.
-    ///
-    /// `muted` wins over the fader, so a muted strip is silent wherever its
-    /// fader happens to sit.
-    /// Returns whether the node was known well enough to send anything. The
-    /// caller uses that to decide whether to remember the value as applied:
-    /// nodes appear asynchronously, so an early call can find nothing and
-    /// must be retried rather than recorded as done.
     /// Whether the backend has finished reporting what already existed.
     #[must_use]
     pub fn enumerated(&self) -> bool {
         self.enumerated
     }
 
-    /// `pan` is -1.0 hard left to +1.0 hard right, 0.0 centred.
+    /// Set a node's level from a fader position in dB.
+    ///
+    /// `muted` wins over the fader, so a muted strip is silent wherever its
+    /// fader happens to sit. `pan` is -1.0 hard left to +1.0 hard right,
+    /// 0.0 centred.
+    ///
+    /// Returns whether the node was known well enough to send anything. The
+    /// caller uses that to decide whether to remember the value as applied:
+    /// nodes appear asynchronously, so an early call can find nothing and
+    /// must be retried rather than recorded as done.
     pub fn set_gain(&self, node_name: &str, gain_db: f32, muted: bool, pan: f32) -> bool {
         let Some(node) = self.id_of(node_name) else {
             log::trace!("set_gain: no node named {node_name}");
