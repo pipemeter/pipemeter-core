@@ -177,6 +177,21 @@ impl Depth {
         }
     }
 
+    /// The other half of [`Depth::bits`], for a file that stores the
+    /// number rather than the name.
+    ///
+    /// Thirty-two means float here, because float is the only 32-bit form
+    /// this writes; anything unrecognised is 16-bit, which every program
+    /// can read.
+    #[must_use]
+    pub fn from_bits(bits: u32) -> Self {
+        match bits {
+            24 => Self::Bits24,
+            32 => Self::Float32,
+            _ => Self::Bits16,
+        }
+    }
+
     /// The `bits per sample` the header declares.
     #[must_use]
     pub fn bits(self) -> u16 {
