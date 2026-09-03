@@ -45,21 +45,75 @@ pub fn documents_dir() -> Option<PathBuf> {
     }
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let config = home.join(".config").join("user-dirs.dirs");
-    if let Ok(text) = std::fs::read_to_string(config) {
-        for line in text.lines() {
-            if let Some(value) = line.trim().strip_prefix("XDG_DOCUMENTS_DIR=") {
-                let value = value.trim().trim_matches('"');
-                return Some(PathBuf::from(
-                    value.replace("$HOME", &home.to_string_lossy()),
-                ));
-            }
-        }
+    if let Ok(text) = std::fs::read_to_string(config)
+        && let Some(dir) = documents_from(&text, &home.to_string_lossy())
+    {
+        return Some(dir);
     }
     Some(home)
 }
 
+/// Read `XDG_DOCUMENTS_DIR` out of a `user-dirs.dirs`.
+///
+/// Its own function so the quoting and the `$HOME` substitution can be
+/// tested without a home directory to read - the same reason
+/// `defaults::parse_name` and `monitors::volume_percent` are split out.
+/// The file is shell syntax: the value is quoted, `$HOME` is literal, and
+/// a commented-out line has to stay commented out.
+#[must_use]
+pub fn documents_from(text: &str, home: &str) -> Option<PathBuf> {
+    let value = text
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("XDG_DOCUMENTS_DIR="))?
+        .trim()
+        .trim_matches('"');
+    (!value.is_empty()).then(|| PathBuf::from(value.replace("$HOME", home)))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::documents_from;
+
+    /// What a desktop actually writes, quotes and `$HOME` and all.
+    const DIRS: &str = "# This file is written by xdg-user-dirs-update\n\
+XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n\
+XDG_DOCUMENTS_DIR=\"$HOME/Documents\"\n\
+XDG_MUSIC_DIR=\"$HOME/Music\"\n";
+
+    #[test]
+    fn the_documents_line_is_read_with_its_quotes_and_home() {
+        assert_eq!(
+            documents_from(DIRS, "/home/someone"),
+            Some(std::path::PathBuf::from("/home/someone/Documents"))
+        );
+    }
+
+    /// A desktop that points documents somewhere absolute, without `$HOME`.
+    #[test]
+    fn an_absolute_path_is_taken_as_it_stands() {
+        assert_eq!(
+            documents_from("XDG_DOCUMENTS_DIR=\"/mnt/work/docs\"\n", "/home/someone"),
+            Some(std::path::PathBuf::from("/mnt/work/docs"))
+        );
+    }
+
+    /// No line, an empty value, or one that has been commented out all
+    /// mean "not configured" - and the caller falls back to the home
+    /// directory rather than to an empty path.
+    #[test]
+    fn nothing_configured_reads_as_nothing() {
+        assert_eq!(
+            documents_from("XDG_MUSIC_DIR=\"$HOME/Music\"\n", "/h"),
+            None
+        );
+        assert_eq!(documents_from("XDG_DOCUMENTS_DIR=\"\"\n", "/h"), None);
+        assert_eq!(
+            documents_from("#XDG_DOCUMENTS_DIR=\"$HOME/D\"\n", "/h"),
+            None
+        );
+    }
+
     /// Without an override the answer still sits under the documents
     /// directory, so an ordinary run is unaffected by the option existing.
     #[test]
