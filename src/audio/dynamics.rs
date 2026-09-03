@@ -112,6 +112,24 @@ pub fn gate_knob_from_db(db: f32) -> f32 {
 /// milliseconds, like the settings file, but only up to five.
 pub const GATE_ATTACK: &str = "gate:attack (ms)";
 
+/// The longest attack the plugin will take, in milliseconds.
+///
+/// Exported so the dialog's knob can travel exactly this far. It offered a
+/// full second, and everything past five did nothing - the same shape of
+/// fault as DAMPING, where the row and the maths that reads it were
+/// written in different places and drifted apart.
+pub const GATE_ATTACK_MAX_MS: f32 = 5.0;
+
+/// The range `gate_blend` reads DAMPING over, in decibels.
+pub const GATE_DAMPING_MIN_DB: f32 = -80.0;
+/// The top of that range: no damping, and the gate fully in circuit.
+pub const GATE_DAMPING_MAX_DB: f32 = 0.0;
+
+/// What the compressor's output gain is held to, in decibels.
+pub const COMP_GAIN_MIN_DB: f32 = -12.0;
+/// The top of that range.
+pub const COMP_GAIN_MAX_DB: f32 = 18.0;
+
 /// Where the gate actually shuts.
 ///
 /// `open (dB)` is where it lets go and `close (dB)` is where it clamps
@@ -199,7 +217,7 @@ pub const GATE_WET: &str = "gmix:Gain 2";
 /// The dry gain for a damping in dB, and the wet gain that goes with it.
 #[must_use]
 pub fn gate_blend(damping_db: f32) -> (f32, f32) {
-    let dry = 10.0f32.powf(damping_db.clamp(-80.0, 0.0) / 20.0);
+    let dry = 10.0f32.powf(damping_db.clamp(GATE_DAMPING_MIN_DB, GATE_DAMPING_MAX_DB) / 20.0);
     (dry, (1.0 - dry).clamp(0.0, 1.0))
 }
 
