@@ -103,6 +103,8 @@ pub struct Chain {
     /// The node the strip's sink feeds.
     pub input: String,
     process: Child,
+    /// Where the helper's own complaints go. See [`Chain::last_words`].
+    errors: PathBuf,
 }
 
 impl Chain {
@@ -110,6 +112,27 @@ impl Chain {
     /// called from the UI thread once a frame and must not block.
     pub fn has_died(&mut self) -> bool {
         matches!(self.process.try_wait(), Ok(Some(_)) | Err(_))
+    }
+
+    /// Whatever the helper said before it went.
+    ///
+    /// Its stderr used to go to `/dev/null`, so a chain that refused to
+    /// start said nothing at all - the mixer reported that it had died and
+    /// restarted it, over and over, with no hint of why. A missing LADSPA
+    /// plugin looks exactly like a malformed graph from the outside.
+    ///
+    /// A file rather than a pipe: nothing here reads the helper while it
+    /// runs, and a pipe nobody drains eventually blocks the process writing
+    /// into it.
+    #[must_use]
+    pub fn last_words(&self) -> String {
+        let Ok(text) = std::fs::read_to_string(&self.errors) else {
+            return String::new();
+        };
+        text.lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_owned()
     }
 }
 
@@ -214,18 +237,25 @@ pub fn spawn_config(name: &str, config: &str) -> io::Result<Chain> {
         .map(|p| p.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(":");
+    // Kept rather than discarded, so a chain that will not start can say
+    // why. Truncated on each spawn, so what is read back belongs to the
+    // helper that just failed and not to one from an hour ago.
+    let errors = config_dir().join(format!("{name}.err"));
+    let stderr = std::fs::File::create(&errors).map_or_else(|_| Stdio::null(), Stdio::from);
+
     let process = Command::new(pipewire_bin())
         .env("LADSPA_PATH", ladspa_path)
         .arg("-c")
         .arg(&path)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()?;
 
     Ok(Chain {
         output: format!("output.{name}"),
         input: format!("input.{name}"),
         process,
+        errors,
     })
 }
 
