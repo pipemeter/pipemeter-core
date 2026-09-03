@@ -65,8 +65,14 @@ pub struct Registry {
 impl Registry {
     /// Note a device that is in the graph now.
     ///
-    /// Returns whether this is the first time it has been seen, which is
-    /// what decides if the list needs writing back out.
+    /// Returns whether anything worth saying out loud changed: a device
+    /// never seen before, a new description, or a kind settled by a live
+    /// look at something that had only been guessed at. Not `last_seen`,
+    /// which moves every frame a device is plugged in and would make the
+    /// answer meaningless.
+    ///
+    /// The caller only logs it. Nothing is written here - the list goes to
+    /// disk when the session does, on a clean exit or when somebody asks.
     pub fn remember(
         &mut self,
         name: &str,
@@ -234,6 +240,51 @@ mod tests {
             Kind::Physical,
         );
         registry
+    }
+
+    /// What `remember` answers, since the caller decides whether to say
+    /// anything on the strength of it. Seeing the same device again with
+    /// nothing new about it is not news; a description arriving, or a kind
+    /// settled by a live look, is.
+    #[test]
+    fn remembering_reports_only_what_is_new() {
+        let mut seen = Registry::default();
+        assert!(
+            seen.remember("alsa_output.x", "Speakers", Direction::Sink, Kind::Physical),
+            "the first sighting is new"
+        );
+        assert!(
+            !seen.remember("alsa_output.x", "Speakers", Direction::Sink, Kind::Physical),
+            "the same device again is not"
+        );
+        assert!(
+            seen.remember(
+                "alsa_output.x",
+                "Front Speakers",
+                Direction::Sink,
+                Kind::Physical
+            ),
+            "a description that has changed is"
+        );
+        assert!(
+            seen.remember(
+                "alsa_output.x",
+                "Front Speakers",
+                Direction::Sink,
+                Kind::Virtual
+            ),
+            "and so is a kind settled by a live look"
+        );
+    }
+
+    /// A device read from the settings file has no description yet; the
+    /// graph supplying one later must not be mistaken for no change.
+    #[test]
+    fn an_empty_description_never_overwrites_a_real_one() {
+        let mut seen = Registry::default();
+        seen.remember("x", "Speakers", Direction::Sink, Kind::Physical);
+        assert!(!seen.remember("x", "", Direction::Sink, Kind::Physical));
+        assert_eq!(seen.description_of("x"), Some("Speakers"));
     }
 
     #[test]
