@@ -590,6 +590,44 @@ fn connect_playback(stream: &StreamRc, rate: u32, channels: u16) -> Option<()> {
     Some(())
 }
 
+/// Start the track again for another pass, if looping is on.
+///
+/// Returns whether the caller should carry on decoding. `false` means either
+/// that looping is off, or that the rewind itself failed - and the second
+/// matters as much as the first: a container that will not seek would
+/// otherwise answer the very next `next_packet` with the same error, and the
+/// loop would spin on it at whatever speed the CPU allows, forever, with no
+/// audio and nothing said. Falling through to the ended path instead stops
+/// the track, which is what a file that cannot be rewound has to do.
+///
+/// Shared by the two arms that end a pass - a clean end of file, and the
+/// error some containers give in its place - because it was the same dozen
+/// lines written out twice.
+fn rewind_for_loop(
+    shared: &Arc<Shared>,
+    format: &mut Box<dyn symphonia::core::formats::FormatReader>,
+    decoder: &mut Box<dyn symphonia::core::codecs::Decoder>,
+    track_id: u32,
+) -> bool {
+    if !shared.loop_playback.load(Ordering::Relaxed) {
+        return false;
+    }
+    let sought = format.seek(
+        SeekMode::Coarse,
+        SeekTo::Time {
+            time: Time::from(0.0f64),
+            track_id: Some(track_id),
+        },
+    );
+    if let Err(err) = sought {
+        log::warn!("cannot loop this file, it will not rewind: {err}");
+        return false;
+    }
+    decoder.reset();
+    shared.position_frames.store(0, Ordering::Relaxed);
+    true
+}
+
 fn run_decoder_probed(
     mut format: Box<dyn symphonia::core::formats::FormatReader>,
     track_id: u32,
@@ -629,17 +667,7 @@ fn run_decoder_probed(
         let packet = match format.next_packet() {
             Ok(pkt) => pkt,
             Err(SymphError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                if shared.loop_playback.load(Ordering::Relaxed) {
-                    // Loop: rewind to the beginning and keep decoding.
-                    let _ = format.seek(
-                        symphonia::core::formats::SeekMode::Coarse,
-                        symphonia::core::formats::SeekTo::Time {
-                            time: symphonia::core::units::Time::from(0.0f64),
-                            track_id: Some(track_id),
-                        },
-                    );
-                    decoder.reset();
-                    shared.position_frames.store(0, Ordering::Relaxed);
+                if rewind_for_loop(shared, &mut format, &mut decoder, track_id) {
                     continue;
                 }
                 shared.ended.store(true, Ordering::Relaxed);
@@ -648,17 +676,7 @@ fn run_decoder_probed(
             }
             Err(err) => {
                 log::debug!("decode stream finished or error: {err}");
-                if shared.loop_playback.load(Ordering::Relaxed) {
-                    // Loop: rewind to the beginning and keep decoding.
-                    let _ = format.seek(
-                        symphonia::core::formats::SeekMode::Coarse,
-                        symphonia::core::formats::SeekTo::Time {
-                            time: symphonia::core::units::Time::from(0.0f64),
-                            track_id: Some(track_id),
-                        },
-                    );
-                    decoder.reset();
-                    shared.position_frames.store(0, Ordering::Relaxed);
+                if rewind_for_loop(shared, &mut format, &mut decoder, track_id) {
                     continue;
                 }
                 shared.ended.store(true, Ordering::Relaxed);
