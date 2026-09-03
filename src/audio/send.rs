@@ -23,7 +23,7 @@
 
 use std::io;
 
-use super::eq::{Chain, spawn_config};
+use super::eq::{Chain, PREAMBLE, spawn_config};
 
 /// The control carrying the level, as filter-chain addresses it.
 pub const LEVEL: &str = "g:Mult";
@@ -51,13 +51,7 @@ pub fn spawn(strip: usize, effect: &str, level: f32) -> io::Result<Chain> {
 fn config(name: &str, level: f32) -> String {
     let level = level.clamp(0.0, 1.0);
     format!(
-        "context.properties = {{ log.level = 0 }}
-context.spa-libs = {{ audio.convert.* = audioconvert/libspa-audioconvert }}
-context.modules = [
-  {{ name = libpipewire-module-rt }}
-  {{ name = libpipewire-module-protocol-native }}
-  {{ name = libpipewire-module-client-node }}
-  {{ name = libpipewire-module-adapter }}
+        "{PREAMBLE}
   {{ name = libpipewire-module-filter-chain
     args = {{
       node.name = \"{name}\"

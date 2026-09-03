@@ -91,6 +91,26 @@ pub enum Kind {
     BusEqualiser,
 }
 
+/// Everything a helper's config needs before its filter-chain.
+///
+/// The same five lines open the equaliser chains, the send chains and the
+/// effect chains, and there is nothing to choose between them - a module
+/// missing from one would be a helper that will not start, reported as a
+/// chain that died for no stated reason. Shared so the three cannot drift.
+///
+/// Only this part. What follows it differs on purpose and in ways that took
+/// measuring to get right: a send is `node.passive = false` because a path
+/// of nothing but followers has nothing to schedule it, while an equaliser
+/// is passive so an unused strip costs nothing. Folding those together
+/// would hide the difference behind a flag.
+pub(super) const PREAMBLE: &str = "context.properties = { log.level = 0 }
+context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert }
+context.modules = [
+  { name = libpipewire-module-rt }
+  { name = libpipewire-module-protocol-native }
+  { name = libpipewire-module-client-node }
+  { name = libpipewire-module-adapter }";
+
 /// Stereo pairs on a chain's playback side.
 ///
 /// One. It was three, for the two FX sends that are gone; see `config`.
@@ -425,13 +445,7 @@ fn wrap(name: &str, nodes: &str, links: &str, input: &str, output: &str) -> Stri
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "context.properties = {{ log.level = 0 }}
-context.spa-libs = {{ audio.convert.* = audioconvert/libspa-audioconvert }}
-context.modules = [
-  {{ name = libpipewire-module-rt }}
-  {{ name = libpipewire-module-protocol-native }}
-  {{ name = libpipewire-module-client-node }}
-  {{ name = libpipewire-module-adapter }}
+        "{PREAMBLE}
   {{ name = libpipewire-module-filter-chain
     args = {{
       node.name = \"{name}\"

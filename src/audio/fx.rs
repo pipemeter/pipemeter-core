@@ -55,7 +55,7 @@
 use std::fmt::Write as _;
 use std::io;
 
-use super::eq::{Chain, spawn_config};
+use super::eq::{Chain, PREAMBLE, spawn_config};
 
 /// Strips that can send, and buses that can return. Both are fixed, like
 /// everything else about this mixer's shape.
@@ -303,13 +303,7 @@ fn wrap(name: &str, nodes: &str, links: &str, kind: Kind) -> String {
     };
 
     format!(
-        "context.properties = {{ log.level = 0 }}
-context.spa-libs = {{ audio.convert.* = audioconvert/libspa-audioconvert }}
-context.modules = [
-  {{ name = libpipewire-module-rt }}
-  {{ name = libpipewire-module-protocol-native }}
-  {{ name = libpipewire-module-client-node }}
-  {{ name = libpipewire-module-adapter }}
+        "{PREAMBLE}
   {{ name = libpipewire-module-filter-chain
     args = {{
       node.name = \"{name}\"
