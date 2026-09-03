@@ -277,6 +277,9 @@ pub struct Writer {
     /// time the deck shows.
     frames: u64,
     rate: u32,
+    /// Whether the take has already been reported as past what its
+    /// container can describe. Said once, not on every batch.
+    warned_oversize: bool,
 }
 
 impl Writer {
@@ -304,6 +307,7 @@ impl Writer {
             container,
             frames: 0,
             rate,
+            warned_oversize: false,
         })
     }
 
@@ -359,6 +363,33 @@ impl Writer {
         self.patch_lengths()
     }
 
+    /// Say so, once, when a take outgrows the size its container can
+    /// describe.
+    ///
+    /// Everything but RF64 keeps its lengths in 32 bits, and past four
+    /// gigabytes they simply cannot be written down - the fields are
+    /// clamped and the file then claims a size that is not its own. The
+    /// samples keep reaching the disk, so nothing fails and nothing looks
+    /// wrong until something tries to read it back.
+    ///
+    /// About four hours at 48 kHz, stereo, 24-bit. A recorder that can be
+    /// left running should say something before that, rather than leave a
+    /// take that only reveals itself when it is needed.
+    fn warn_if_oversize(&mut self, data: u64) {
+        if self.warned_oversize || self.container == Container::Rf64 {
+            return;
+        }
+        if u32::try_from(data).is_ok() {
+            return;
+        }
+        self.warned_oversize = true;
+        log::warn!(
+            "this take has passed four gigabytes, which a {} cannot describe - \
+             its header will understate its length. Record as RF64 for takes this long.",
+            self.container.caption()
+        );
+    }
+
     /// Bring the header's lengths up to date with what has been written.
     ///
     /// `RF64` keeps its real lengths in the `ds64` chunk and leaves the
@@ -368,6 +399,7 @@ impl Writer {
         let header = u64::from(self.container.header_len());
         let data = self.frames * u64::from(self.channels) * u64::from(self.depth.bytes());
         let end = SeekFrom::Start(header + data);
+        self.warn_if_oversize(data);
 
         if self.container == Container::Rf64 {
             // riffSize, dataSize and sampleCount, in that order.
@@ -751,6 +783,34 @@ mod tests {
         assert_eq!(u32::from_le_bytes(b[16..20].try_into().unwrap()), 602);
         assert_eq!(&b[622..626], b"fmt ", "the format follows the description");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A take that outgrows its container is reported once, not per batch,
+    /// and RF64 - which can describe it - says nothing at all.
+    #[test]
+    fn outgrowing_the_container_is_said_once() {
+        let dir = std::env::temp_dir().join("pipemeter-wav-oversize");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        for (container, expected) in [(Container::Wav, true), (Container::Rf64, false)] {
+            let path = dir.join(format!("{}.take", container.as_str()));
+            let mut writer =
+                Writer::create(&path, 48_000, 2, Depth::Bits16, container).expect("writer opens");
+
+            // Past four gigabytes without writing four gigabytes: the
+            // header maths reads the frame count, so setting it is enough
+            // to reach the case.
+            writer.frames = u64::from(u32::MAX);
+            writer.patch_lengths().expect("lengths patched");
+            assert_eq!(writer.warned_oversize, expected, "{container:?}");
+
+            // And it stays said once.
+            writer.frames += 48_000;
+            writer.patch_lengths().expect("lengths patched again");
+            assert_eq!(writer.warned_oversize, expected, "{container:?} again");
+
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     /// RF64 exists because a WAV cannot say it is bigger than 4 GB. The
