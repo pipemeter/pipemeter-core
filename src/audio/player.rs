@@ -659,6 +659,21 @@ fn run_decoder_probed(
                 .unwrap_or(0)
         });
 
+        // The deepest queue sets the pace, so a second of audio is the most
+        // that is ever held for any one target.
+        //
+        // Taking the deepest rather than the shallowest means a target that
+        // never drains would stall every other one with it - the decoder
+        // would sleep forever and all the outputs would go quiet together.
+        // That it cannot happen rests on something worth saying out loud:
+        // every deck target is linked to at least one node the mixer owns,
+        // because an A bus is joined to its `pipemeter_aN` tap as well as
+        // to the output device, and a B bus is one of our sinks outright.
+        // Pulling a headset out from under A2 leaves its stream draining
+        // into the tap and the other buses playing on, which is measured
+        // rather than assumed. A future target with no such node behind it
+        // would need this to take the shallowest queue and cap each one
+        // instead.
         if max_q > (rate as usize * 2) {
             std::thread::sleep(Duration::from_millis(15));
             continue;
