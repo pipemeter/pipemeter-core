@@ -33,6 +33,18 @@ use super::wav;
 struct Shared {
     pending: Mutex<Vec<f32>>,
     stopping: AtomicBool,
+    /// Whether the take is held.
+    ///
+    /// Read by the process callback, which drops the frames it is handed
+    /// while this is set rather than appending them. The file stays open and
+    /// the writer thread stays alive, so a paused take resumes into the same
+    /// file instead of starting a second one - which is the whole point of a
+    /// pause as against a stop.
+    ///
+    /// What is dropped is dropped: a pause is a gap in the recording, not a
+    /// buffer of it. Holding the frames instead would mean an unbounded
+    /// buffer growing for as long as the pause lasts.
+    paused: AtomicBool,
     /// Frames written, so the deck can show elapsed time without reaching
     /// into the writer thread.
     frames: AtomicU64,
@@ -71,6 +83,17 @@ impl std::fmt::Debug for Recorder {
             .field("stream", &self.stream.is_some())
             .field("_listener", &"<pipewire>")
             .finish()
+    }
+}
+
+impl Recorder {
+    /// Hold the take, or let it run again.
+    ///
+    /// The file stays open either way. A held take writes nothing and its
+    /// elapsed count stops moving, which is what the deck reads to show the
+    /// counter standing still.
+    pub fn set_paused(&self, paused: bool) {
+        self.shared.paused.store(paused, Ordering::Relaxed);
     }
 }
 
@@ -170,6 +193,12 @@ pub fn start(
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
+            // Still dequeued, and so still recycled when it drops at the end
+            // of this callback. Leaving it alone instead would starve the
+            // stream of buffers and show up as xruns across the graph.
+            if user_data.shared.paused.load(Ordering::Relaxed) {
+                return;
+            }
             let datas = buffer.datas_mut();
             let Some(data) = datas.first_mut() else {
                 return;

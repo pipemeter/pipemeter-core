@@ -591,6 +591,18 @@ impl Backend {
             .is_ok()
     }
 
+    /// Hold every running take where it is, or let them run on.
+    ///
+    /// Not a stop: the files stay open and a resumed take goes on writing
+    /// into the same one, leaving the pause as a gap rather than a seam
+    /// between two files. Nothing is recorded while it is held - there is no
+    /// buffer to catch up from.
+    pub fn set_recording_paused(&self, paused: bool) -> bool {
+        self.commands
+            .send(Command::SetRecordingPaused { paused })
+            .is_ok()
+    }
+
     /// Play an audio file into one or more target nodes, or stop playback (empty targets or `None` path).
     pub fn play(&self, targets: &[String], path: Option<&std::path::Path>, gain_db: f32) -> bool {
         self.commands

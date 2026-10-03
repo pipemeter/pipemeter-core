@@ -201,6 +201,11 @@ pub enum Command {
         /// What they are wrapped in.
         container: super::wav::Container,
     },
+    /// Hold every running take where it is, or let them run on.
+    ///
+    /// Separate from `Record` with no takes, which closes the files: this
+    /// keeps them open so the take resumes into the same file.
+    SetRecordingPaused { paused: bool },
     /// Start or stop playing an audio file into one or more target buses.
     Play {
         targets: Vec<String>,
@@ -588,6 +593,11 @@ fn handle(context: &CommandContext, command: Command) {
             container,
         } => {
             start_takes(context, &takes, rate, depth, container);
+        }
+        Command::SetRecordingPaused { paused } => {
+            for recorder in context.recorder.borrow().iter() {
+                recorder.set_paused(paused);
+            }
         }
         Command::Play {
             targets,
